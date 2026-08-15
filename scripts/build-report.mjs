@@ -462,6 +462,12 @@ async function main() {
   const financials = financialMap(listedFinancials, otcFinancials);
   const tracked = [...portfolio, ...observation.flatMap(g => g.stocks)].map(x => ({ ...x, financial: financials.get(x.code) ?? null }));
   const weighted = WEIGHTED.map(x => history.get(x[0]) ?? selectQuote(x, allQuotes));
+  const liveOtcIndex = us.quotes.find(x => x.symbol === '^TWOII');
+  const otcIndex = liveOtcIndex ?? (previousSnapshot?.market?.otcIndex ? {
+    ...previousSnapshot.market.otcIndex,
+    fallback: true,
+    source: { ...previousSnapshot.market.otcIndex.source, label: `${previousSnapshot.market.otcIndex.source?.label ?? '行情資料'}（前次成功快照）` },
+  } : null);
   const allMarketQuotes = [...tw.twse, ...tw.tpex].filter(x => Number.isFinite(x.pct));
   const breadth = { up: allMarketQuotes.filter(x=>x.pct>0).length, down:allMarketQuotes.filter(x=>x.pct<0).length, flat:allMarketQuotes.filter(x=>x.pct===0).length, turnover:allMarketQuotes.reduce((sum,x)=>sum+(x.value||0),0), topTurnover:allMarketQuotes.sort((a,b)=>(b.value||0)-(a.value||0)).slice(0,20).reduce((sum,x)=>sum+(x.value||0),0) };
   const rankSource = source(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`, 'TWSE 個股法人買賣超');
@@ -471,7 +477,7 @@ async function main() {
   const sectorTrends = liveSectors.length ? sectorPulse(liveSectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name))) : (previousSnapshot?.market?.sectorPulse ?? []).map(item => ({ ...item, fallback:true, source:{ ...item.source, label:`${item.source?.label ?? '交易所類股資料'}（前次成功快照）` } }));
   const summaryResult = await settled(() => summarizeNews(newsItems, {
     dow:us.quotes.find(x=>x.symbol==='^DJI'), nasdaq:us.quotes.find(x=>x.symbol==='^IXIC'), dollar:us.quotes.find(x=>x.symbol==='DX-Y.NYB'), yield:us.quotes.find(x=>x.symbol==='^TNX'), oil:us.quotes.find(x=>x.symbol==='CL=F'),
-    taiex:marketSummary.taiex, otc:us.quotes.find(x=>x.symbol==='^TWOII'), breadth,
+    taiex:marketSummary.taiex, otc:otcIndex, breadth,
     sectors:{ strong:sectorTrends.slice(0,3).map(x=>({name:x.name,pct:x.pct,weekPct:x.weekPct,monthPct:x.monthPct})), weak:sectorTrends.slice(-3).map(x=>({name:x.name,pct:x.pct,weekPct:x.weekPct,monthPct:x.monthPct})) },
     portfolio:portfolio.map(x=>({code:x.code,name:x.name,pct:x.pct,volumePct:x.volumePct,revenue:x.revenue&&{yoy:x.revenue.yoy,mom:x.revenue.mom}})),
     watch:observation.flatMap(g=>g.stocks).slice(0,12).map(x=>({code:x.code,name:x.name,pct:x.pct,volumePct:x.volumePct,revenue:x.revenue&&{yoy:x.revenue.yoy,mom:x.revenue.mom}})),
@@ -486,7 +492,7 @@ async function main() {
     news: { global:globalNews.error ? [] : globalNews, taiwan:taiwanNews.error ? [] : taiwanNews },
     newsAnalysis: summaryResult.error ? { events: [], five: [], macro: [], error:summaryResult.error } : summaryResult,
     usGroups: US_GROUPS.map(([title, symbols]) => ({ title, stocks:symbols.map(s=>us.quotes.find(x=>x.symbol===s)).filter(Boolean) })),
-    market: { ...marketSummary, otcIndex:us.quotes.find(x=>x.symbol==='^TWOII'), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorTrends },
+    market: { ...marketSummary, otcIndex, futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorTrends },
     taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null, stockNote:dailyStockNotes[x.code] ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },
     events: {
       notices: commonStockEvents(notices, source(`${TWSE}/announcement/notice`, 'TWSE 注意股票')),

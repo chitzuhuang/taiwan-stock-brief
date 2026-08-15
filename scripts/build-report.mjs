@@ -29,6 +29,7 @@ const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFu
 const PREVIOUS_SNAPSHOT_URL = 'https://chitzuhuang.github.io/taiwan-stock-brief/data/latest.json';
 const DIVIDEND_URL = 'https://www.twse.com.tw/exchangeReport/TWT48U?response=json';
 const TPEX_DIVIDEND_URL = 'https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost';
+const MIS_STOCK_INFO_URL = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp';
 
 const PORTFOLIO = [
   // Final field is the broker net cost basis from the supplied holdings screen (fees/taxes included).
@@ -52,6 +53,10 @@ const TRACKED_MOPS_ISSUERS = [...new Map([
   ...PORTFOLIO.map(([code, , venue]) => [code, venue === 'tpex' ? 'otc' : 'sii']),
   ...GROUPS.flatMap(([, , stocks]) => stocks.map(([code, , venue]) => [code, venue === 'tpex' ? 'otc' : 'sii'])),
 ]).entries()].map(([code, TYPEK]) => ({ code, TYPEK }));
+const TRACKED_MARKET_ISSUERS = [...new Map([
+  ...PORTFOLIO.map(([code, , venue]) => [code, venue]),
+  ...GROUPS.flatMap(([, , stocks]) => stocks.map(([code, , venue]) => [code, venue])),
+]).entries()].map(([code, venue]) => ({ code, venue }));
 const US = [
   ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'], ['^TWOII', '櫃買指數'],
   ['TSM', '台積電 ADR'], ['NVDA', '輝達'], ['MU', '美光'], ['AMD', '超微'], ['INTC', '英特爾'], ['AVGO', '博通'], ['UMC', '聯電 ADR'],
@@ -162,6 +167,35 @@ async function fetchTaiwanQuotes() {
   const twse = Array.isArray(twseResult) ? twseResult.map(normalizeTwse) : [];
   const tpex = Array.isArray(tpexResult) ? tpexResult.map(normalizeTpex) : [];
   return { twse, tpex, errors: [twseResult.error, tpexResult.error].filter(Boolean) };
+}
+async function fetchOfficialBoardLots() {
+  const regular = new Map(), errors = [];
+  for (let cursor = 0; cursor < TRACKED_MARKET_ISSUERS.length; cursor += 20) {
+    const batch = TRACKED_MARKET_ISSUERS.slice(cursor, cursor + 20);
+    const channels = batch.map(({ code, venue }) => `${venue === 'tpex' ? 'otc' : 'tse'}_${code}.tw`).join('|');
+    try {
+      const payload = await getJson(`${MIS_STOCK_INFO_URL}?ex_ch=${encodeURIComponent(channels)}&json=1&delay=0`);
+      for (const row of payload?.msgArray ?? []) {
+        const code = clean(row.c), lots = number(row.v);
+        if (/^\d{4}$/.test(code) && Number.isFinite(lots)) regular.set(code, lots);
+      }
+    } catch (error) { errors.push(`MIS 整股成交量：${clean(error.message)}`); }
+  }
+  const [twseAfter, tpexAfter] = await Promise.all([
+    settled(() => getJson(`${TWSE}/exchangeReport/BFT41U`)),
+    settled(() => getJson(`${TPEX}/tpex_off_market`)),
+  ]);
+  if (twseAfter.error) errors.push(`TWSE 盤後定價：${twseAfter.error}`);
+  if (tpexAfter.error) errors.push(`TPEx 盤後定價：${tpexAfter.error}`);
+  const afterLots = new Map();
+  const addAfter = (rows, codeKeys) => (Array.isArray(rows) ? rows : []).forEach(row => {
+    const code = clean(lookup(row, codeKeys)), lots = number(lookup(row, ['TradeVolume', '成交股數', 'TradingShares']));
+    if (/^\d{4}$/.test(code) && Number.isFinite(lots)) afterLots.set(code, (afterLots.get(code) ?? 0) + lots);
+  });
+  addAfter(twseAfter, ['Code', '證券代號']);
+  addAfter(tpexAfter, ['SecuritiesCompanyCode', 'Code', '代號']);
+  const sourceInfo = source(MIS_STOCK_INFO_URL, '交易所整股＋盤後定價成交量');
+  return { lots: new Map([...regular].map(([code, lots]) => [code, { lots: lots + (afterLots.get(code) ?? 0), source:sourceInfo }])), errors };
 }
 async function fetchUsQuote(symbol, name, range = '1mo') {
   const url = `${YAHOO}/${encodeURIComponent(symbol)}?range=${range}&interval=1d`;
@@ -411,7 +445,7 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows, tpexDividendRows] = await Promise.all([
+  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows, tpexDividendRows, boardLots] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -432,6 +466,7 @@ async function main() {
     settled(() => fetchMopsCalendar()),
     settled(() => getJson(DIVIDEND_URL)),
     settled(() => getJson(TPEX_DIVIDEND_URL)),
+    fetchOfficialBoardLots(),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -440,7 +475,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error, ...boardLots.errors].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const trackedCodes = new Set([...heldCodes, ...GROUPS.flatMap(([, , stocks]) => stocks.map(stock => stock[0]))]);
   const currentMopsEvents = mopsCalendar.error ? [] : mopsCalendar;
@@ -453,13 +488,17 @@ async function main() {
     if (!item.unavailable || !previous?.close) return item;
     return { ...previous, shares:item.shares, cost:item.cost, netCost:item.netCost, fallback:true, source:{ ...previous.source, label:`${previous.source?.label ?? '交易所資料'}（前次成功快照）` } };
   };
+  const withOfficialBoardLots = item => {
+    const volume = boardLots.lots.get(item.code);
+    return volume ? { ...item, boardLots:volume.lots, volumeSource:volume.source } : { ...item, boardLots:null };
+  };
   const withOfficialVolumeChange = item => {
     const previous = previousByCode.get(item.code);
-    const volumePct = Number.isFinite(item.volume) && Number.isFinite(previous?.volume) && previous.volume > 0 ? +((item.volume / previous.volume - 1) * 100).toFixed(2) : null;
+    const volumePct = Number.isFinite(item.boardLots) && Number.isFinite(previous?.boardLots) && previous.boardLots > 0 ? +((item.boardLots / previous.boardLots - 1) * 100).toFixed(2) : null;
     return { ...item, volumePct };
   };
-  const rawPortfolio = PORTFOLIO.map(stock => withOfficialVolumeChange(keepPreviousQuote(portfolioItem(stock, allQuotes, revenueMap))));
-  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...withOfficialVolumeChange(keepPreviousQuote(addRevenue(selectQuote(stock, allQuotes), revenueMap))), held: heldCodes.has(stock[0]) })) }));
+  const rawPortfolio = PORTFOLIO.map(stock => withOfficialVolumeChange(withOfficialBoardLots(keepPreviousQuote(portfolioItem(stock, allQuotes, revenueMap)))));
+  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...withOfficialVolumeChange(withOfficialBoardLots(keepPreviousQuote(addRevenue(selectQuote(stock, allQuotes), revenueMap)))), held: heldCodes.has(stock[0]) })) }));
   const enriched = await enrichHistory([...rawPortfolio, ...rawObservation.flatMap(g => g.stocks), ...WEIGHTED.map(x => selectQuote(x, allQuotes))]);
   const history = new Map(enriched.map(x => [x.code, x]));
   const portfolio = rawPortfolio.map(x => ({ ...x, ...history.get(x.code) }));

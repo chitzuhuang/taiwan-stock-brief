@@ -87,6 +87,13 @@ async function fetchMopsPage(body) {
   throw lastError;
 }
 function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')); }
+async function settleMopsInBatches(requests, batchSize = 4) {
+  const results = [];
+  for (let cursor = 0; cursor < requests.length; cursor += batchSize) {
+    results.push(...await Promise.allSettled(requests.slice(cursor, cursor + batchSize).map(request => request())));
+  }
+  return results;
+}
 // MOPS issuer-hosted calls are not written consistently: examples include
 // 「亞洲水泥舉辦…線上法說會」、「2026年上半年度營運概況法人說明會」,
 // and 「本公司舉行…法人說明會」.  Include all of these official notices,
@@ -94,14 +101,15 @@ function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace
 // or third-party presentation.
 const isIssuerHostedMopsCall = detail => {
   if (!/(?:法人說明會|法說會)/.test(detail)) return false;
-  return !/(?:受邀|受邀請|邀請).{0,36}(?:參加|出席|舉辦)|(?:本公司|公司).{0,16}參加.{0,36}(?:證券|券商|法人說明會|法說會)|(?:證券|券商).{0,20}舉辦/.test(detail);
+  if (/(?:受邀|受邀請|邀請).{0,36}(?:參加|出席|舉辦)|(?:本公司|公司).{0,16}參加.{0,36}(?:證券|券商|法人說明會|法說會)|(?:證券|券商).{0,20}(?:邀請|舉辦)/.test(detail)) return false;
+  return /(?:舉辦|舉行|召開|自辦|營運概況|營運成果|財務數字|財務報告|業績展望).{0,48}(?:法人說明會|法說會)|(?:法人說明會|法說會).{0,48}(?:營運概況|營運成果|財務數字|財務報告|業績展望)/.test(detail);
 };
 async function fetchMopsCalendar() {
   const now = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(now.getTime() + 7 * 86_400_000);
   const months = [...new Set([now, end].map(d => ({ year:String(d.getFullYear() - 1911), month:String(d.getMonth() + 1).padStart(2, '0') })) .map(x => `${x.year}-${x.month}`))].map(x => { const [year, month] = x.split('-'); return { year, month }; });
-  const wholeMarketRequests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
-  const verificationRequests = months.flatMap(({ year, month }) => TRACKED_MOPS_ISSUERS.map(({ code, TYPEK }) => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:code })));
-  const settledPages = await Promise.allSettled([...wholeMarketRequests, ...verificationRequests]);
+  const wholeMarketRequests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => () => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
+  const verificationRequests = months.flatMap(({ year, month }) => TRACKED_MOPS_ISSUERS.map(({ code, TYPEK }) => () => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:code })));
+  const settledPages = [...await settleMopsInBatches(wholeMarketRequests), ...await settleMopsInBatches(verificationRequests)];
   const pages = settledPages.filter(result => result.status === 'fulfilled').map(result => result.value);
   if (!pages.length) throw new Error('MOPS 法人說明會資料無法取得');
   const sourceInfo = source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表');

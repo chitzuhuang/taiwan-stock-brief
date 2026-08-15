@@ -120,7 +120,7 @@ events 最多5則；five 固定5則；macro 至少3則。若無法從可信來�
 
 新聞標題：
 ${headlines}`;
-  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'minimal' }, tools: [{ type: 'web_search', filters: { allowed_domains: TRUSTED_NEWS_DOMAINS } }], max_tool_calls: 8, input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(110_000) });
+  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'low' }, tools: [{ type: 'web_search', filters: { allowed_domains: TRUSTED_NEWS_DOMAINS } }], max_tool_calls: 8, input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(110_000) });
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}: ${(await response.text()).slice(0, 600)}`);
   const payload = await response.json();
   const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');

@@ -28,7 +28,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Fetch structured market data
+      - name: Fetch structured market data and generate summaries
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node scripts/build-report.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

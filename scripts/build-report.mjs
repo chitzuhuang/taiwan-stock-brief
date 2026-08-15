@@ -67,11 +67,18 @@ async function postText(url, body) {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.text();
 }
+async function fetchMopsPage(body) {
+  let lastError;
+  for (const host of ['https://mopsov.twse.com.tw', 'https://mops.twse.com.tw']) {
+    try { return await postText(`${host}/mops/web/ajax_t100sb02_1`, body); } catch (error) { lastError = error; }
+  }
+  throw lastError;
+}
 function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')); }
 async function fetchMopsCalendar() {
   const now = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(now.getTime() + 7 * 86_400_000);
   const months = [...new Set([now, end].map(d => ({ year:String(d.getFullYear() - 1911), month:String(d.getMonth() + 1).padStart(2, '0') })) .map(x => `${x.year}-${x.month}`))].map(x => { const [year, month] = x.split('-'); return { year, month }; });
-  const requests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => postText('https://mopsov.twse.com.tw/mops/web/ajax_t100sb02_1', { step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
+  const requests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
   const pages = await Promise.all(requests), sourceInfo = source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表');
   const rows = pages.flatMap(page => page.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? []).map(row => [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(match => mopsText(match[1]))).filter(cells => cells.length >= 5);
   const seen = new Set();
@@ -382,7 +389,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const previousByCode = new Map([...(previousSnapshot?.taiwan?.portfolio ?? []), ...(previousSnapshot?.taiwan?.observation ?? []).flatMap(group => group.stocks ?? [])].map(item => [item.code, item]));

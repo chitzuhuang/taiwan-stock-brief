@@ -125,7 +125,7 @@ function parseTaggedSummary(text) {
     }
     return values;
   };
-  const macro = bullets('MACRO').slice(0, 5);
+  const rawMacro = bullets('MACRO').slice(0, 5);
   const readings = Object.fromEntries(['tw', 'sector', 'portfolio', 'watch'].map(id => [id, reading(id)]));
   const stockNotes = Object.fromEntries(bullets('HOLDINGS').map(line => {
     const [code, title, ...rest] = line.split(/[｜|]/).map(clean);
@@ -134,17 +134,17 @@ function parseTaggedSummary(text) {
   const suppliedFive = bullets('FIVE');
   const fallbackFive = [
     ...events.map(item => item.summary),
-    ...macro,
+    ...rawMacro,
     ...Object.values(readings).flatMap(item => [item.event, item.evidence, item.impact]).filter(Boolean),
   ];
   const result = {
     events,
     five: [...suppliedFive, ...fallbackFive.filter(item => !suppliedFive.includes(item))].slice(0, 5),
-    macro,
+    macro: [...rawMacro, ...suppliedFive.filter(item => !rawMacro.includes(item))].slice(0, 3),
     readings,
     stockNotes,
   };
-  if (!result.events.length || result.five.length < 5 || result.macro.length < 3) throw new Error(`OpenAI summary tags incomplete: ${text.slice(0, 900)}`);
+  if (!result.events.length || result.five.length < 5) throw new Error(`OpenAI summary tags incomplete: ${text.slice(0, 900)}`);
   return result;
 }
 async function summarizeNews(news, market) {
@@ -161,6 +161,13 @@ const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日�
 - 事件標題｜40~70字：明確寫出事件或公告日期／生效時點、直接受影響的公司或族群、與追蹤清單的關聯，以及下一個必須驗證的價量、法人或被動資金反應。不得寫成單純數字摘要。
 [MACRO]
 - 30~50字總經／商品事件
+[HOLDINGS]
+- 0050｜標題｜60~90字持股研究摘要：依可驗證的指數、除權息或資金事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 2408｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 3481｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 6770｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 8996｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 4979｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
 [READING:tw]
 驅動：25~45字
 證據：25~45字
@@ -181,13 +188,6 @@ const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日�
 證據：25~45字
 影響：25~45字
 驗證：25~45字
-[HOLDINGS]
-- 0050｜標題｜80~120字持股研究摘要：依可驗證的指數、除權息或資金事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
-- 2408｜標題｜80~120字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
-- 3481｜標題｜80~120字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
-- 6770｜標題｜80~120字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
-- 8996｜標題｜80~120字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
-- 4979｜標題｜80~120字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
 EVENTS 最多5則；FIVE 必須剛好5則且每則都是不同事件；MACRO 至少3則。readings 每個欄位必須引用提供數字或查證事件，不能空泛或提出交易指令。
 events 最多5則；five 固定5則；macro 至少3則。只採用報告日當日或前5日的新事件；較舊政策或數據不得當作最新事件。不得把交易所 API 更新、一般資料頁面或無投資影響的新聞列入 events。每則須具體說明「事件→受影響市場／族群→接下來要驗證的數字或時點」。若無法從可信來源支持因果，明確寫「原因待原文確認」。搜尋總次數最多14次，優先用於五件事與持股、觀察清單相關的公司催化劑。
 

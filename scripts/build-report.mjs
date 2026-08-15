@@ -133,6 +133,7 @@ function parseTaggedSummary(text) {
     return [code, title && rest.length ? { title, summary: rest.join('｜') } : null];
   }).filter(([code, value]) => /^\d{4}$/.test(code) && value));
   const suppliedFive = bullets('FIVE');
+  const calendar = bullets('CALENDAR').slice(0, 12);
   const fallbackFive = [
     ...events.map(item => item.summary),
     ...rawMacro,
@@ -144,6 +145,7 @@ function parseTaggedSummary(text) {
     macro: [...rawMacro, ...suppliedFive.filter(item => !rawMacro.includes(item))].slice(0, 3),
     readings,
     stockNotes,
+    calendar,
   };
   if (!result.events.length || result.five.length < 5) throw new Error(`OpenAI summary tags incomplete: ${text.slice(0, 900)}`);
   return result;
@@ -160,6 +162,8 @@ const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日�
 - 中文事件標題｜30~50字市場解讀
 [FIVE]
 - 事件標題｜40~70字：明確寫出事件或公告日期／生效時點、直接受影響的公司或族群、與追蹤清單的關聯，以及下一個必須驗證的價量、法人或被動資金反應。不得寫成單純數字摘要。
+[CALENDAR]
+- YYYY/MM/DD HH:MM｜公司代號 公司名稱或事件名稱｜法說會／指數調整／除權息等未來七日已確認時程；僅列出有可信來源確認的日期或時間，最多12則。
 [MACRO]
 - 30~50字總經／商品事件
 [HOLDINGS]

@@ -147,12 +147,12 @@ function lookup(row, names) {
 function normalizeTwse(row) {
   const close = number(lookup(row, ['收盤價', 'ClosingPrice']));
   const change = number(lookup(row, ['漲跌價差', 'Change']));
-  return { code: clean(lookup(row, ['證券代號', 'Code'])), name: clean(lookup(row, ['證券名稱', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradeVolume'])), value: number(lookup(row, ['成交金額', 'TradeValue'])), source: source(`${TWSE}/exchangeReport/STOCK_DAY_ALL`, 'TWSE OpenAPI') };
+  return { code: clean(lookup(row, ['證券代號', 'Code'])), name: clean(lookup(row, ['證券名稱', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradeVolume'])), value: number(lookup(row, ['成交金額', 'TradeValue'])), source: source(`${TWSE}/exchangeReport/STOCK_DAY_ALL`, 'TWSE 上市整股日成交資訊') };
 }
 function normalizeTpex(row) {
   const close = number(lookup(row, ['收盤', 'Close']));
   const change = number(lookup(row, ['漲跌', 'Change']));
-  return { code: clean(lookup(row, ['代號', 'SecuritiesCompanyCode', 'Code'])), name: clean(lookup(row, ['名稱', 'CompanyName', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradingShares', 'Volume'])), value: number(lookup(row, ['成交金額', 'TradingValue', 'Value'])), source: source(`${TPEX}/tpex_mainboard_daily_close_quotes`, 'TPEx OpenAPI') };
+  return { code: clean(lookup(row, ['代號', 'SecuritiesCompanyCode', 'Code'])), name: clean(lookup(row, ['名稱', 'CompanyName', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradingShares', 'Volume'])), value: number(lookup(row, ['成交金額', 'TradingValue', 'Value'])), source: source(`${TPEX}/tpex_mainboard_daily_close_quotes`, 'TPEx 上櫃整股收盤行情') };
 }
 async function fetchTaiwanQuotes() {
   const [twseResult, tpexResult] = await Promise.all([
@@ -341,7 +341,7 @@ function yahooSymbol(item) { return `${item.code}.${item.venue === 'tpex' ? 'TWO
 async function enrichHistory(items) {
   const results = await Promise.all(items.map(item => settled(() => fetchUsQuote(yahooSymbol(item), item.name))));
   const byCode = new Map(results.filter(x => !x.error).map(x => [x.symbol.split('.')[0], x]));
-  return items.map(item => { const h = byCode.get(item.code); return h ? { ...item, volumePct: h.volumePct, weekPct: h.weekPct, monthPct: h.monthPct } : item; });
+  return items.map(item => { const h = byCode.get(item.code); return h ? { ...item, weekPct: h.weekPct, monthPct: h.monthPct } : item; });
 }
 function parseInstitutionRanks(payload, sourceInfo) {
   const fields = payload?.fields ?? [], rows = payload?.data ?? [];
@@ -453,8 +453,13 @@ async function main() {
     if (!item.unavailable || !previous?.close) return item;
     return { ...previous, shares:item.shares, cost:item.cost, netCost:item.netCost, fallback:true, source:{ ...previous.source, label:`${previous.source?.label ?? '交易所資料'}（前次成功快照）` } };
   };
-  const rawPortfolio = PORTFOLIO.map(stock => keepPreviousQuote(portfolioItem(stock, allQuotes, revenueMap)));
-  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...keepPreviousQuote(addRevenue(selectQuote(stock, allQuotes), revenueMap)), held: heldCodes.has(stock[0]) })) }));
+  const withOfficialVolumeChange = item => {
+    const previous = previousByCode.get(item.code);
+    const volumePct = Number.isFinite(item.volume) && Number.isFinite(previous?.volume) && previous.volume > 0 ? +((item.volume / previous.volume - 1) * 100).toFixed(2) : null;
+    return { ...item, volumePct };
+  };
+  const rawPortfolio = PORTFOLIO.map(stock => withOfficialVolumeChange(keepPreviousQuote(portfolioItem(stock, allQuotes, revenueMap))));
+  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...withOfficialVolumeChange(keepPreviousQuote(addRevenue(selectQuote(stock, allQuotes), revenueMap))), held: heldCodes.has(stock[0]) })) }));
   const enriched = await enrichHistory([...rawPortfolio, ...rawObservation.flatMap(g => g.stocks), ...WEIGHTED.map(x => selectQuote(x, allQuotes))]);
   const history = new Map(enriched.map(x => [x.code, x]));
   const portfolio = rawPortfolio.map(x => ({ ...x, ...history.get(x.code) }));

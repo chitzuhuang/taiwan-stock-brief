@@ -127,7 +127,7 @@ ${headlines}`;
   if (!outputText) throw new Error('OpenAI returned empty summary text');
   const jsonText = outputText.replace(/^```json\s*|\s*```$/g, '').match(/\{[\s\S]*\}/)?.[0];
   if (!jsonText) throw new Error(`OpenAI did not return JSON summary text: ${JSON.stringify((payload.output ?? []).map(item => ({ type:item.type, status:item.status, contentTypes:(item.content ?? []).map(part => part.type), textLength:(item.content ?? []).reduce((sum, part) => sum + String(part.text ?? '').length, 0) })))}`);
-  return JSON.parse(jsonText);
+  try { return JSON.parse(jsonText); } catch (error) { throw new Error(`Web summary JSON parse error: ${error.message}; raw=${jsonText.slice(0, 900)}`); }
 }
 function normalizeIndex(row, url) {
   const sign = clean(row['漲跌']) === '-' ? -1 : 1;

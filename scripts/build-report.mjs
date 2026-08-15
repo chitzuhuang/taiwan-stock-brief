@@ -23,8 +23,9 @@ const REVENUE_URLS = [
 const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
 
 const PORTFOLIO = [
-  ['0050', '元大台灣50', 'twse', 1100, 104.84], ['2408', '南亞科', 'twse', 50, 405.84], ['3481', '群創', 'twse', 1000, 66.06],
-  ['6770', '力積電', 'twse', 800, 73.11], ['8996', '高力', 'twse', 50, 1115.92], ['4979', '華星光', 'tpex', 100, 478.90],
+  // Final field is the broker net cost basis from the supplied holdings screen (fees/taxes included).
+  ['0050', '元大台灣50', 'twse', 1100, 104.84, 115610], ['2408', '南亞科', 'twse', 50, 405.84, 20404], ['3481', '群創', 'twse', 1000, 66.06, 66277],
+  ['6770', '力積電', 'twse', 800, 73.11, 58766], ['8996', '高力', 'twse', 50, 1115.92, 56079], ['4979', '華星光', 'tpex', 100, 478.90, 48120],
 ];
 const GROUPS = [
   ['A-1', '光通訊/CPO 上游光晶片', [['3081', '聯亞', 'tpex'], ['3234', '光環', 'tpex'], ['4991', '環宇-KY', 'tpex']]],
@@ -147,7 +148,7 @@ function normalizeRevenue(listedRows, otcRows) {
   return new Map([...withSource(listedRows, REVENUE_URLS[0]), ...withSource(otcRows, REVENUE_URLS[1])]);
 }
 function addRevenue(quote, revenueMap) { return { ...quote, revenue: revenueMap.get(quote.code) ?? null }; }
-function portfolioItem(stock, quotes, revenues) { const [code, name, venue, shares, cost] = stock; const q = addRevenue(selectQuote([code, name, venue], quotes), revenues); const marketValue = Number.isFinite(q.close) ? q.close * shares : null; const costValue = shares * cost; return { ...q, shares, cost, costValue, marketValue, profit: marketValue == null ? null : marketValue - costValue, profitPct: marketValue == null ? null : +((marketValue / costValue - 1) * 100).toFixed(2) }; }
+function portfolioItem(stock, quotes, revenues) { const [code, name, venue, shares, cost, netCost] = stock; const q = addRevenue(selectQuote([code, name, venue], quotes), revenues); const marketValue = Number.isFinite(q.close) ? q.close * shares : null; const profit = marketValue == null ? null : marketValue - netCost; return { ...q, shares, cost, netCost, marketValue, profit, profitPct: profit == null ? null : +(profit / (shares * cost) * 100).toFixed(2) }; }
 function yahooSymbol(item) { return `${item.code}.${item.venue === 'tpex' ? 'TWO' : 'TW'}`; }
 async function enrichHistory(items) {
   const results = await Promise.all(items.map(item => settled(() => fetchUsQuote(yahooSymbol(item), item.name))));
@@ -159,7 +160,8 @@ function parseInstitutionRanks(payload, sourceInfo) {
   const field = text => fields.indexOf(text);
   const codeAt = field('證券代號'), nameAt = field('證券名稱'), netAt = field('三大法人買賣超股數');
   if (codeAt < 0 || netAt < 0) return { buys: [], sells: [] };
-  const ranked = rows.map(row => ({ code: clean(row[codeAt]), name: clean(row[nameAt]), net: number(row[netAt]), source: sourceInfo })).filter(x => x.code && Number.isFinite(x.net));
+  const etfName = /ETF|台灣50|正2|反1|高股息|主動|優息|永續|科技龍頭|非投等債|槓桿|期貨/;
+  const ranked = rows.map(row => ({ code: clean(row[codeAt]), name: clean(row[nameAt]), net: number(row[netAt]), source: sourceInfo })).filter(x => /^\d{4}$/.test(x.code) && !etfName.test(x.name) && Number.isFinite(x.net));
   return { buys: ranked.filter(x => x.net > 0).sort((a,b) => b.net - a.net).slice(0,10), sells: ranked.filter(x => x.net < 0).sort((a,b) => a.net - b.net).slice(0,10) };
 }
 function financialMap(listed, otc) {

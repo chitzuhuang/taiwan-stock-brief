@@ -5,3 +5,5 @@
 .report-compact-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.report-card-summary{margin:10px 0 0;color:var(--muted);font-size:15.5px}.report-position{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);font-size:14.5px}.report-tracked{font-weight:750} (max-width:520px){.report-compact-grid{grid-template-columns:1fr}}
 
 .market-up{color:#e66767!important}.market-down{color:#0ca30c!important}
+
+.report-compact-grid{gap:4px}.sector-chart{gap:4px}.sector-chart-row{gap:5px;line-height:1.35}

@@ -151,7 +151,7 @@ async function summarizeNews(news, market) {
 [EVENTS]
 - 中文事件標題｜30~50字市場解讀
 [FIVE]
-- 30~50字今日最該注意事項
+- 事件標題｜40~70字：明確寫出事件或公告日期／生效時點、直接受影響的公司或族群、與追蹤清單的關聯，以及下一個必須驗證的價量、法人或被動資金反應。不得寫成單純數字摘要。
 [MACRO]
 - 30~50字總經／商品事件
 [READING:tw]
@@ -174,14 +174,14 @@ async function summarizeNews(news, market) {
 證據：25~45字
 影響：25~45字
 驗證：25~45字
-EVENTS 最多5則；FIVE 固定5則；MACRO 至少3則。readings 每個欄位必須引用提供數字或查證事件，不能空泛或提出交易指令。
-events 最多5則；five 固定5則；macro 至少3則。只採用報告日當日或前5日的新事件；較舊政策或數據不得當作最新事件。不得把交易所 API 更新、一般資料頁面或無投資影響的新聞列入 events。每則須具體說明「事件→受影響市場／族群→接下來要驗證的數字或時點」。若無法從可信來源支持因果，明確寫「原因待原文確認」。搜尋總次數不得超過8次。
+EVENTS 最多5則；FIVE 必須剛好5則且每則都是不同事件；MACRO 至少3則。readings 每個欄位必須引用提供數字或查證事件，不能空泛或提出交易指令。
+events 最多5則；five 固定5則；macro 至少3則。只採用報告日當日或前5日的新事件；較舊政策或數據不得當作最新事件。不得把交易所 API 更新、一般資料頁面或無投資影響的新聞列入 events。每則須具體說明「事件→受影響市場／族群→接下來要驗證的數字或時點」。若無法從可信來源支持因果，明確寫「原因待原文確認」。搜尋總次數最多14次，優先用於五件事與持股、觀察清單相關的公司催化劑。
 
 市場數字：${JSON.stringify(market)}
 
 新聞標題：
 ${headlines}`;
-  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'low' }, tools: [{ type: 'web_search', filters: { allowed_domains: TRUSTED_NEWS_DOMAINS } }], max_tool_calls: 8, input: prompt }), signal: AbortSignal.timeout(110_000) });
+  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'low' }, tools: [{ type: 'web_search', filters: { allowed_domains: TRUSTED_NEWS_DOMAINS } }], max_tool_calls: 14, input: prompt }), signal: AbortSignal.timeout(110_000) });
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}: ${(await response.text()).slice(0, 600)}`);
   const payload = await response.json();
   const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');

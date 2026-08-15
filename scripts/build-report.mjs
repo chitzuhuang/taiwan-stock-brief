@@ -126,7 +126,7 @@ ${headlines}`;
   const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');
   if (!outputText) throw new Error('OpenAI returned empty summary text');
   const jsonText = outputText.replace(/^```json\s*|\s*```$/g, '').match(/\{[\s\S]*\}/)?.[0];
-  if (!jsonText) throw new Error('OpenAI did not return JSON summary text');
+  if (!jsonText) throw new Error(`OpenAI did not return JSON summary text: ${JSON.stringify(payload.output ?? payload).slice(0, 900)}`);
   return JSON.parse(jsonText);
 }
 function normalizeIndex(row, url) {

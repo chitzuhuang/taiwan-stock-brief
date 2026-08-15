@@ -175,6 +175,34 @@ function parseInstitutionRanks(payload, sourceInfo) {
   const ranked = rows.map(row => ({ code: clean(row[codeAt]), name: clean(row[nameAt]), net: number(row[netAt]), source: sourceInfo })).filter(x => /^\d{4}$/.test(x.code) && !etfName.test(x.name) && Number.isFinite(x.net));
   return { buys: ranked.filter(x => x.net > 0).sort((a,b) => b.net - a.net).slice(0,10), sells: ranked.filter(x => x.net < 0).sort((a,b) => a.net - b.net).slice(0,10) };
 }
+// The exchange endpoints include ETFs, warrants, bonds and other securities.
+// This report's attention/disposition lists are intentionally limited to common
+// shares (four-digit stock codes) so the list stays useful for stock research.
+function rocDateToIso(value) {
+  const text = clean(value).replaceAll('/', '').replaceAll('-', '');
+  if (!/^\d{7}$/.test(text)) return '';
+  return `${Number(text.slice(0, 3)) + 1911}${text.slice(3)}`;
+}
+function formatDispositionPeriod(value) {
+  return clean(value).replace(/(\d{3})(\d{2})(\d{2})/g, '$1/$2/$3').replace('~', '～');
+}
+function commonStockEvents(rows, sourceInfo, { activeOnly = false } = {}) {
+  const excluded = /ETF|權證|認購|認售|牛證|熊證|可轉換公司債|可交換公司債|公司債|債券|特別股|存託憑證|TDR|受益憑證|基金|期貨/;
+  return (Array.isArray(rows) ? rows : rows?.data ?? []).map(row => {
+    const code = clean(lookup(row, ['證券代號', '股票代號', 'Code', 'SecuritiesCompanyCode']));
+    const name = clean(lookup(row, ['證券名稱', '股票名稱', 'Name', 'CompanyName']));
+    return {
+      code, name,
+      detail: clean(lookup(row, ['注意交易資訊', 'TradingInfoForAttention', '處置條件', 'ReasonsOfDisposition', '處置內容', 'Detail', 'DispositionReasons', 'DisposalCondition'])) || '詳見交易所公告',
+      period: formatDispositionPeriod(lookup(row, ['處置期間', 'DispositionPeriod'])),
+      source: sourceInfo,
+    };
+  }).filter(row => {
+    if (!/^\d{4}$/.test(row.code) || excluded.test(row.name)) return false;
+    const end = rocDateToIso(row.period.split('～').at(-1));
+    return !activeOnly || !end || end >= todayTaipei().replaceAll('-', '');
+  });
+}
 function financialMap(listed, otc) {
   const normalize = (rows, codeKey, sourceInfo) => new Map((Array.isArray(rows) ? rows : []).map(r => [clean(r[codeKey]), { eps:number(r['基本每股盈餘(元)'] ?? r['基本每股盈餘']), revenue:number(r['營業收入']), operating:number(r['營業利益']), netIncome:number(r['稅後淨利']), quarter:clean(r['季別']), source:sourceInfo }]));
   return new Map([...normalize(listed, '公司代號', source(`${TWSE}/opendata/t187ap14_L`, 'TWSE Q2 財報')), ...normalize(otc, 'SecuritiesCompanyCode', source(`${TPEX}/mopsfin_t187ap14_O`, 'TPEx Q2 財報'))]);
@@ -206,10 +234,11 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews] = await Promise.all([
+  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
+    settled(() => getJson(`${TPEX}/tpex_disposal_information`)),
     settled(() => getJson(`${TWSE}/holidaySchedule/holidaySchedule?response=json`)),
     settled(() => getJson(`${TWSE}/exchangeReport/MI_INDEX`)),
     settled(() => getJson(`${TWSE_RWD}/fund/BFI82U?response=json`)),
@@ -230,7 +259,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const rawPortfolio = PORTFOLIO.map(stock => portfolioItem(stock, allQuotes, revenueMap));
@@ -258,7 +287,14 @@ async function main() {
     usGroups: US_GROUPS.map(([title, symbols]) => ({ title, stocks:symbols.map(s=>us.quotes.find(x=>x.symbol===s)).filter(Boolean) })),
     market: { ...buildMarketSummary(indexRows, institutional), otcIndex:us.quotes.find(x=>x.symbol==='^TWOII'), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorPulse(buildMarketSummary(indexRows, institutional).sectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name))) },
     taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },
-    events: { notices: Array.isArray(notices) ? notices : notices.data ?? [], punishments: Array.isArray(punish) ? punish : punish.data ?? [], sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票') } },
+    events: {
+      notices: commonStockEvents(notices, source(`${TWSE}/announcement/notice`, 'TWSE 注意股票')),
+      punishments: [
+        ...commonStockEvents(punish, source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), { activeOnly: true }),
+        ...commonStockEvents(tpexDisposals, source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), { activeOnly: true }),
+      ],
+      sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), tpexDisposals: source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票') },
+    },
     unavailable: ['法說市場共識、DRAM 現貨/合約價與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。', '產業漲跌原因須使用可授權的新聞／公告來源；目前只呈現交易所分類指數的客觀強弱。'],
   };
   await mkdir(dirname(OUTPUT), { recursive: true });

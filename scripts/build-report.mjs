@@ -23,8 +23,8 @@ const REVENUE_URLS = [
 const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
 
 const PORTFOLIO = [
-  ['0050', '元大台灣50', 'twse'], ['2408', '南亞科', 'twse'], ['3481', '群創', 'twse'],
-  ['6770', '力積電', 'twse'], ['8996', '高力', 'twse'], ['4979', '華星光', 'tpex'],
+  ['0050', '元大台灣50', 'twse', 1100, 104.84], ['2408', '南亞科', 'twse', 50, 405.84], ['3481', '群創', 'twse', 1000, 66.06],
+  ['6770', '力積電', 'twse', 800, 73.11], ['8996', '高力', 'twse', 50, 1115.92], ['4979', '華星光', 'tpex', 100, 478.90],
 ];
 const GROUPS = [
   ['A-1', '光通訊/CPO 上游光晶片', [['3081', '聯亞', 'tpex'], ['3234', '光環', 'tpex'], ['4991', '環宇-KY', 'tpex']]],
@@ -39,8 +39,11 @@ const GROUPS = [
 const US = [
   ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'],
   ['TSM', '台積電 ADR'], ['NVDA', '輝達'], ['MU', '美光'], ['AMD', '超微'], ['INTC', '英特爾'], ['AVGO', '博通'], ['UMC', '聯電 ADR'],
+  ['TSLA', '特斯拉'], ['000660.KS', 'SK 海力士'], ['SNDK', 'SanDisk'], ['MRVL', 'Marvell'], ['GOOG', 'Alphabet'], ['GLW', '康寧'], ['IBM', 'IBM'], ['VRT', 'Vertiv'], ['MOD', 'Modine'], ['LITE', 'Lumentum'],
   ['DX-Y.NYB', '美元指數'], ['^TNX', '10年期美債殖利率'], ['CL=F', 'WTI 原油'],
 ];
+const US_GROUPS = [['指數與總經', ['^DJI','^GSPC','^IXIC','^SOX','DX-Y.NYB','^TNX','CL=F']], ['AI 算力／半導體', ['TSM','NVDA','AMD','INTC','AVGO','MRVL','IBM']], ['記憶體', ['MU','000660.KS','SNDK']], ['AI 電力／散熱', ['VRT','MOD']], ['光通訊／網路', ['LITE','GLW']], ['雲端與電動車', ['GOOG','TSLA','UMC']]];
+const WEIGHTED = [['2330', '台積電', 'twse'], ['2317', '鴻海', 'twse'], ['2454', '聯發科', 'twse'], ['2308', '台達電', 'twse']];
 
 const source = (url, label) => ({ url, label });
 const todayTaipei = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
@@ -61,12 +64,12 @@ function lookup(row, names) {
 function normalizeTwse(row) {
   const close = number(lookup(row, ['收盤價', 'ClosingPrice']));
   const change = number(lookup(row, ['漲跌價差', 'Change']));
-  return { code: clean(lookup(row, ['證券代號', 'Code'])), name: clean(lookup(row, ['證券名稱', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradeVolume'])), source: source(`${TWSE}/exchangeReport/STOCK_DAY_ALL`, 'TWSE OpenAPI') };
+  return { code: clean(lookup(row, ['證券代號', 'Code'])), name: clean(lookup(row, ['證券名稱', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradeVolume'])), value: number(lookup(row, ['成交金額', 'TradeValue'])), source: source(`${TWSE}/exchangeReport/STOCK_DAY_ALL`, 'TWSE OpenAPI') };
 }
 function normalizeTpex(row) {
   const close = number(lookup(row, ['收盤', 'Close']));
   const change = number(lookup(row, ['漲跌', 'Change']));
-  return { code: clean(lookup(row, ['代號', 'SecuritiesCompanyCode', 'Code'])), name: clean(lookup(row, ['名稱', 'CompanyName', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradingShares', 'Volume'])), source: source(`${TPEX}/tpex_mainboard_daily_close_quotes`, 'TPEx OpenAPI') };
+  return { code: clean(lookup(row, ['代號', 'SecuritiesCompanyCode', 'Code'])), name: clean(lookup(row, ['名稱', 'CompanyName', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradingShares', 'Volume'])), value: number(lookup(row, ['成交金額', 'TradingValue', 'Value'])), source: source(`${TPEX}/tpex_mainboard_daily_close_quotes`, 'TPEx OpenAPI') };
 }
 async function fetchTaiwanQuotes() {
   const [twseResult, tpexResult] = await Promise.all([
@@ -77,14 +80,18 @@ async function fetchTaiwanQuotes() {
   const tpex = Array.isArray(tpexResult) ? tpexResult.map(normalizeTpex) : [];
   return { twse, tpex, errors: [twseResult.error, tpexResult.error].filter(Boolean) };
 }
-async function fetchUsQuote(symbol, name) {
-  const url = `${YAHOO}/${encodeURIComponent(symbol)}?range=5d&interval=1d`;
+async function fetchUsQuote(symbol, name, range = '1mo') {
+  const url = `${YAHOO}/${encodeURIComponent(symbol)}?range=${range}&interval=1d`;
   const payload = await getJson(url);
   const result = payload.chart?.result?.[0];
-  const closes = (result?.indicators?.quote?.[0]?.close ?? []).filter(Number.isFinite);
+  const quote = result?.indicators?.quote?.[0] ?? {};
+  const closes = (quote.close ?? []).filter(Number.isFinite);
+  const volumes = (quote.volume ?? []).filter(Number.isFinite);
   const close = closes.at(-1), previous = closes.at(-2);
   if (!Number.isFinite(close) || !Number.isFinite(previous)) throw new Error('insufficient chart data');
-  return { symbol, name, close: +close.toFixed(2), change: +(close - previous).toFixed(2), pct: +((close - previous) / previous * 100).toFixed(2), source: source(url, 'Yahoo chart endpoint（非官方）') };
+  const pctFrom = offset => Number.isFinite(closes.at(-offset)) ? +((close / closes.at(-offset) - 1) * 100).toFixed(2) : null;
+  const priorVolume = volumes.at(-2), volume = volumes.at(-1);
+  return { symbol, name, close: +close.toFixed(2), change: +(close - previous).toFixed(2), pct: +((close - previous) / previous * 100).toFixed(2), volume, volumePct: Number.isFinite(volume) && Number.isFinite(priorVolume) && priorVolume ? +((volume / priorVolume - 1) * 100).toFixed(2) : null, weekPct: pctFrom(6), monthPct: pctFrom(closes.length), source: source(url, 'Yahoo chart endpoint（非官方）') };
 }
 async function fetchMarket() {
   const results = await Promise.all(US.map(([symbol, name]) => settled(() => fetchUsQuote(symbol, name))));
@@ -135,13 +142,36 @@ function normalizeRevenue(listedRows, otcRows) {
   return new Map([...withSource(listedRows, REVENUE_URLS[0]), ...withSource(otcRows, REVENUE_URLS[1])]);
 }
 function addRevenue(quote, revenueMap) { return { ...quote, revenue: revenueMap.get(quote.code) ?? null }; }
+function portfolioItem(stock, quotes, revenues) { const [code, name, venue, shares, cost] = stock; const q = addRevenue(selectQuote([code, name, venue], quotes), revenues); const marketValue = Number.isFinite(q.close) ? q.close * shares : null; const costValue = shares * cost; return { ...q, shares, cost, costValue, marketValue, profit: marketValue == null ? null : marketValue - costValue, profitPct: marketValue == null ? null : +((marketValue / costValue - 1) * 100).toFixed(2) }; }
+function yahooSymbol(item) { return `${item.code}.${item.venue === 'tpex' ? 'TWO' : 'TW'}`; }
+async function enrichHistory(items) {
+  const results = await Promise.all(items.map(item => settled(() => fetchUsQuote(yahooSymbol(item), item.name))));
+  const byCode = new Map(results.filter(x => !x.error).map(x => [x.symbol.split('.')[0], x]));
+  return items.map(item => { const h = byCode.get(item.code); return h ? { ...item, volumePct: h.volumePct, weekPct: h.weekPct, monthPct: h.monthPct } : item; });
+}
+function parseInstitutionRanks(payload, sourceInfo) {
+  const fields = payload?.fields ?? [], rows = payload?.data ?? [];
+  const field = text => fields.indexOf(text);
+  const codeAt = field('證券代號'), nameAt = field('證券名稱'), netAt = field('三大法人買賣超股數');
+  if (codeAt < 0 || netAt < 0) return { buys: [], sells: [] };
+  const ranked = rows.map(row => ({ code: clean(row[codeAt]), name: clean(row[nameAt]), net: number(row[netAt]), source: sourceInfo })).filter(x => x.code && Number.isFinite(x.net));
+  return { buys: ranked.filter(x => x.net > 0).sort((a,b) => b.net - a.net).slice(0,10), sells: ranked.filter(x => x.net < 0).sort((a,b) => a.net - b.net).slice(0,10) };
+}
+function financialMap(listed, otc) {
+  const normalize = (rows, codeKey, sourceInfo) => new Map((Array.isArray(rows) ? rows : []).map(r => [clean(r[codeKey]), { eps:number(r['基本每股盈餘(元)'] ?? r['基本每股盈餘']), revenue:number(r['營業收入']), operating:number(r['營業利益']), netIncome:number(r['稅後淨利']), quarter:clean(r['季別']), source:sourceInfo }]));
+  return new Map([...normalize(listed, '公司代號', source(`${TWSE}/opendata/t187ap14_L`, 'TWSE Q2 財報')), ...normalize(otc, 'SecuritiesCompanyCode', source(`${TPEX}/mopsfin_t187ap14_O`, 'TPEx Q2 財報'))]);
+}
+function sectorPulse(sectors, priorWeek = [], priorMonth = []) {
+  const w = new Map(priorWeek.map(x => [x.name, x.close])), m = new Map(priorMonth.map(x => [x.name, x.close]));
+  return sectors.map(x => ({ ...x, weekPct: w.has(x.name) ? +((x.close / w.get(x.name) - 1) * 100).toFixed(2) : null, monthPct: m.has(x.name) ? +((x.close / m.get(x.name) - 1) * 100).toFixed(2) : null }));
+}
 function reportDate() {
   const parts = TAIPEI.formatToParts(new Date()).reduce((acc, x) => ({ ...acc, [x.type]: x.value }), {});
   return { date: `${parts.year}-${parts.month}-${parts.day}`, weekday: parts.weekday };
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows] = await Promise.all([
+  const [tw, us, notices, punish, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -151,6 +181,9 @@ async function main() {
     settled(() => getJson(REVENUE_URLS[0])),
     settled(() => getJson(REVENUE_URLS[1])),
     settled(() => getJson(TAIFEX_FUTURES_URL)),
+    settled(() => getJson(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`)),
+    settled(() => getJson(`${TWSE}/opendata/t187ap14_L`)),
+    settled(() => getJson(`${TPEX}/mopsfin_t187ap14_O`)),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -159,18 +192,30 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
-  const observation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...addRevenue(selectQuote(stock, allQuotes), revenueMap), held: heldCodes.has(stock[0]) })) }));
+  const rawPortfolio = PORTFOLIO.map(stock => portfolioItem(stock, allQuotes, revenueMap));
+  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...addRevenue(selectQuote(stock, allQuotes), revenueMap), held: heldCodes.has(stock[0]) })) }));
+  const enriched = await enrichHistory([...rawPortfolio, ...rawObservation.flatMap(g => g.stocks), ...WEIGHTED.map(x => selectQuote(x, allQuotes))]);
+  const history = new Map(enriched.map(x => [x.code, x]));
+  const portfolio = rawPortfolio.map(x => ({ ...x, ...history.get(x.code) }));
+  const observation = rawObservation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, ...history.get(x.code) })) }));
+  const financials = financialMap(listedFinancials, otcFinancials);
+  const tracked = [...portfolio, ...observation.flatMap(g => g.stocks)].map(x => ({ ...x, financial: financials.get(x.code) ?? null }));
+  const weighted = WEIGHTED.map(x => history.get(x[0]) ?? selectQuote(x, allQuotes));
+  const allMarketQuotes = [...tw.twse, ...tw.tpex].filter(x => Number.isFinite(x.pct));
+  const breadth = { up: allMarketQuotes.filter(x=>x.pct>0).length, down:allMarketQuotes.filter(x=>x.pct<0).length, flat:allMarketQuotes.filter(x=>x.pct===0).length, turnover:allMarketQuotes.reduce((sum,x)=>sum+(x.value||0),0), topTurnover:allMarketQuotes.sort((a,b)=>(b.value||0)-(a.value||0)).slice(0,20).reduce((sum,x)=>sum+(x.value||0),0) };
+  const rankSource = source(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`, 'TWSE 個股法人買賣超');
   const latest = {
     schemaVersion: 1,
     generatedAt,
     reportDate: { ...reportDate(), isHoliday, source: source(`${TWSE}/holidaySchedule/holidaySchedule?response=json`, 'TWSE 交易日曆') },
     verification: { sourceErrors, note: '未取得或無授權資料一律標示為無法查證；不以推估、舊資料或媒體文字取代。' },
     usMarket: us.quotes,
-    market: { ...buildMarketSummary(indexRows, institutional), futures: normalizeTaiFutures(futuresRows) },
-    taiwan: { portfolio: PORTFOLIO.map(stock => addRevenue(selectQuote(stock, allQuotes), revenueMap)), observation },
+    usGroups: US_GROUPS.map(([title, symbols]) => ({ title, stocks:symbols.map(s=>us.quotes.find(x=>x.symbol===s)).filter(Boolean) })),
+    market: { ...buildMarketSummary(indexRows, institutional), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource) },
+    taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },
     events: { notices: Array.isArray(notices) ? notices : notices.data ?? [], punishments: Array.isArray(punish) ? punish : punish.data ?? [], sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票') } },
     unavailable: ['法說市場共識、DRAM 現貨/合約價與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。', '產業漲跌原因須使用可授權的新聞／公告來源；目前只呈現交易所分類指數的客觀強弱。'],
   };

@@ -133,7 +133,14 @@ function parseTaggedSummary(text) {
     return [code, title && rest.length ? { title, summary: rest.join('｜') } : null];
   }).filter(([code, value]) => /^\d{4}$/.test(code) && value));
   const suppliedFive = bullets('FIVE');
-  const calendar = bullets('CALENDAR').slice(0, 12);
+  const calendarStart = new Date(`${todayTaipei()}T00:00:00+08:00`);
+  const calendarEnd = new Date(calendarStart.getTime() + 7 * 86_400_000);
+  const calendar = bullets('CALENDAR').filter(item => {
+    const dateText = item.match(/(\d{4})\/(\d{2})\/(\d{2})/)?.[0]?.replaceAll('/', '-');
+    if (!dateText) return false;
+    const eventDate = new Date(`${dateText}T00:00:00+08:00`);
+    return eventDate >= calendarStart && eventDate <= calendarEnd;
+  }).slice(0, 12);
   const fallbackFive = [
     ...events.map(item => item.summary),
     ...rawMacro,

@@ -28,6 +28,7 @@ const REVENUE_URLS = [
 const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
 const PREVIOUS_SNAPSHOT_URL = 'https://chitzuhuang.github.io/taiwan-stock-brief/data/latest.json';
 const DIVIDEND_URL = 'https://www.twse.com.tw/exchangeReport/TWT48U?response=json';
+const TPEX_DIVIDEND_URL = 'https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost';
 
 const PORTFOLIO = [
   // Final field is the broker net cost basis from the supplied holdings screen (fees/taxes included).
@@ -96,6 +97,13 @@ function upcomingDividends(payload, codes) {
   return (payload?.data ?? []).map(row => Object.fromEntries(fields.map((field, index) => [field, row[index]]))).map(row => {
     const date = rocDate(row['除權除息日期']);
     return { code:clean(row['股票代號']), name:clean(row['名稱']), date, time:'', place:'除權息', detail:`${clean(row['除權息'])}｜現金股利 ${number(row['現金股利']).toFixed(2)} 元／股；無償配股率 ${number(row['無償配股率']).toFixed(4)}`, source:src };
+  }).filter(item => codes.has(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
+}
+function upcomingTpexDividends(rows, codes) {
+  const start = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(start.getTime() + 7 * 86_400_000), src = source('https://www.tpex.org.tw/zh-tw/announce/market/ex/announce.html', 'TPEx 除權除息預告表');
+  return (Array.isArray(rows) ? rows : []).map(row => {
+    const raw = clean(row.ExRrightsExDividendDate), date = /^\d{7}$/.test(raw) ? `${Number(raw.slice(0,3))+1911}-${raw.slice(3,5)}-${raw.slice(5,7)}` : null;
+    return { code:clean(row.SecuritiesCompanyCode), name:clean(row.CompanyName), date, time:'', place:'除權息', detail:`${clean(row.ExRrightsExDividend)}｜現金股利 ${number(row.CashDividend).toFixed(2)} 元／股；無償配股率 ${number(row.StockDividendRatio).toFixed(4)}`, source:src };
   }).filter(item => codes.has(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
 }
 async function settled(task) { try { return await task(); } catch (error) { return { error: clean(error.message) }; } }
@@ -371,7 +379,7 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows] = await Promise.all([
+  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows, tpexDividendRows] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -391,6 +399,7 @@ async function main() {
     settled(() => getJson(PREVIOUS_SNAPSHOT_URL)),
     settled(() => fetchMopsCalendar()),
     settled(() => getJson(DIVIDEND_URL)),
+    settled(() => getJson(TPEX_DIVIDEND_URL)),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -399,7 +408,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const trackedCodes = new Set([...heldCodes, ...GROUPS.flatMap(([, , stocks]) => stocks.map(stock => stock[0]))]);
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
@@ -453,6 +462,7 @@ async function main() {
       calendar: [
         ...(mopsCalendar.error ? [] : mopsCalendar.filter(item => trackedCodes.has(item.code))),
         ...(dividendRows.error ? [] : upcomingDividends(dividendRows, trackedCodes)),
+        ...(tpexDividendRows.error ? [] : upcomingTpexDividends(tpexDividendRows, trackedCodes)),
       ].sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`)),
       sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), tpexDisposals: source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), calendar: source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表') },
     },

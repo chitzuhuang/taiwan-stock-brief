@@ -27,6 +27,7 @@ const REVENUE_URLS = [
 ];
 const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
 const PREVIOUS_SNAPSHOT_URL = 'https://chitzuhuang.github.io/taiwan-stock-brief/data/latest.json';
+const DIVIDEND_URL = 'https://www.twse.com.tw/exchangeReport/TWT48U?response=json';
 
 const PORTFOLIO = [
   // Final field is the broker net cost basis from the supplied holdings screen (fees/taxes included).
@@ -88,6 +89,14 @@ async function fetchMopsCalendar() {
     const year = Number(match[1]) + (match[1].length === 3 ? 1911 : 0), event = new Date(`${year}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}T00:00:00+08:00`);
     const key = `${item.code}-${item.date}-${item.time}`; if (event < now || event > end || seen.has(key)) return false; seen.add(key); return true;
   });
+}
+function rocDate(value) { const match = clean(value).match(/(\d{3,4})年(\d{1,2})月(\d{1,2})日/); if (!match) return null; return `${Number(match[1]) + (match[1].length === 3 ? 1911 : 0)}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}`; }
+function upcomingDividends(payload, codes) {
+  const fields = payload?.fields ?? [], start = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(start.getTime() + 7 * 86_400_000), src = source('https://www.twse.com.tw/zh/announcement/ex-right/twt48u.html', 'TWSE 除權除息預告表');
+  return (payload?.data ?? []).map(row => Object.fromEntries(fields.map((field, index) => [field, row[index]]))).map(row => {
+    const date = rocDate(row['除權除息日期']);
+    return { code:clean(row['股票代號']), name:clean(row['名稱']), date, time:'', place:'除權息', detail:`${clean(row['除權息'])}｜現金股利 ${number(row['現金股利']).toFixed(2)} 元／股；無償配股率 ${number(row['無償配股率']).toFixed(4)}`, source:src };
+  }).filter(item => codes.has(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
 }
 async function settled(task) { try { return await task(); } catch (error) { return { error: clean(error.message) }; } }
 
@@ -362,7 +371,7 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar] = await Promise.all([
+  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -381,6 +390,7 @@ async function main() {
     settled(() => fetchNews('Taiwan stock market semiconductor')),
     settled(() => getJson(PREVIOUS_SNAPSHOT_URL)),
     settled(() => fetchMopsCalendar()),
+    settled(() => getJson(DIVIDEND_URL)),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -389,8 +399,9 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
+  const trackedCodes = new Set([...heldCodes, ...GROUPS.flatMap(([, , stocks]) => stocks.map(stock => stock[0]))]);
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const previousByCode = new Map([...(previousSnapshot?.taiwan?.portfolio ?? []), ...(previousSnapshot?.taiwan?.observation ?? []).flatMap(group => group.stocks ?? [])].map(item => [item.code, item]));
   const keepPreviousQuote = item => {
@@ -439,7 +450,10 @@ async function main() {
         ...commonStockEvents(punish, source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), { activeOnly: true }),
         ...commonStockEvents(tpexDisposals, source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), { activeOnly: true }),
       ],
-      calendar: mopsCalendar.error ? [] : mopsCalendar.filter(item => heldCodes.has(item.code) || observation.flatMap(group => group.stocks).some(stock => stock.code === item.code)),
+      calendar: [
+        ...(mopsCalendar.error ? [] : mopsCalendar.filter(item => trackedCodes.has(item.code))),
+        ...(dividendRows.error ? [] : upcomingDividends(dividendRows, trackedCodes)),
+      ].sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`)),
       sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), tpexDisposals: source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), calendar: source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表') },
     },
     unavailable: ['法說市場共識、DRAM 現貨/合約價與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。', '產業漲跌原因須使用可授權的新聞／公告來源；目前只呈現交易所分類指數的客觀強弱。'],

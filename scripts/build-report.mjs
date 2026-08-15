@@ -13,6 +13,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUTPUT = resolve(ROOT, 'public/data/latest.json');
 const TAIPEI = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
 const TWSE = 'https://openapi.twse.com.tw/v1';
+const TWSE_RWD = 'https://www.twse.com.tw/rwd/zh';
 const TPEX = 'https://www.tpex.org.tw/openapi/v1';
 const YAHOO = 'https://query1.finance.yahoo.com/v8/finance/chart';
 
@@ -84,6 +85,31 @@ async function fetchMarket() {
   const results = await Promise.all(US.map(([symbol, name]) => settled(() => fetchUsQuote(symbol, name))));
   return { quotes: results.filter(x => !x.error), errors: results.filter(x => x.error).map(x => x.error) };
 }
+function normalizeIndex(row, url) {
+  const sign = clean(row['漲跌']) === '-' ? -1 : 1;
+  return {
+    name: clean(row['指數']), close: number(row['收盤指數']),
+    change: sign * Math.abs(number(row['漲跌點數'])), pct: sign * Math.abs(number(row['漲跌百分比'])),
+    source: source(url, 'TWSE 大盤分類指數'),
+  };
+}
+function buildMarketSummary(indexRows, institutional) {
+  const indexUrl = `${TWSE}/exchangeReport/MI_INDEX`;
+  const indices = (Array.isArray(indexRows) ? indexRows : []).map(row => normalizeIndex(row, indexUrl));
+  const find = name => indices.find(item => item.name === name);
+  const sectors = indices.filter(item => /類指數$/.test(item.name) && !item.name.includes('報酬') && Number.isFinite(item.pct));
+  const institutionSource = source(`${TWSE_RWD}/fund/BFI82U?response=json`, 'TWSE 三大法人');
+  const institutions = (institutional?.data ?? []).map(row => ({
+    name: clean(row[0]), buy: number(row[1]), sell: number(row[2]), net: number(row[3]), source: institutionSource,
+  }));
+  return {
+    taiex: find('發行量加權股價指數'),
+    indices: ['臺灣50指數', '臺灣中型100指數', '未含電子指數'].map(find).filter(Boolean),
+    sectors: sectors.sort((a, b) => b.pct - a.pct),
+    institutions,
+    source: source(indexUrl, 'TWSE 大盤分類指數'),
+  };
+}
 function selectQuote([code, name, venue], lookupMap) {
   const found = lookupMap.get(code);
   return found ?? { code, name, venue, unavailable: true, source: source(venue === 'twse' ? `${TWSE}/exchangeReport/STOCK_DAY_ALL` : `${TPEX}/tpex_mainboard_daily_close_quotes`, venue === 'twse' ? 'TWSE OpenAPI' : 'TPEx OpenAPI') };
@@ -94,11 +120,13 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, holidays] = await Promise.all([
+  const [tw, us, notices, punish, holidays, indexRows, institutional] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
     settled(() => getJson(`${TWSE}/holidaySchedule/holidaySchedule?response=json`)),
+    settled(() => getJson(`${TWSE}/exchangeReport/MI_INDEX`)),
+    settled(() => getJson(`${TWSE_RWD}/fund/BFI82U?response=json`)),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -107,7 +135,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const observation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...selectQuote(stock, allQuotes), held: heldCodes.has(stock[0]) })) }));
   const latest = {
@@ -116,9 +144,10 @@ async function main() {
     reportDate: { ...reportDate(), isHoliday, source: source(`${TWSE}/holidaySchedule/holidaySchedule?response=json`, 'TWSE 交易日曆') },
     verification: { sourceErrors, note: '未取得或無授權資料一律標示為無法查證；不以推估、舊資料或媒體文字取代。' },
     usMarket: us.quotes,
+    market: buildMarketSummary(indexRows, institutional),
     taiwan: { portfolio: PORTFOLIO.map(stock => selectQuote(stock, allQuotes)), observation },
     events: { notices: Array.isArray(notices) ? notices : notices.data ?? [], punishments: Array.isArray(punish) ? punish : punish.data ?? [], sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票') } },
-    unavailable: ['產業漲跌原因、法說市場共識、DRAM 現貨/合約價、台指期與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。'],
+    unavailable: ['法說市場共識、DRAM 現貨/合約價、台指期夜盤與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。', '產業漲跌原因須使用可授權的新聞／公告來源；目前只呈現交易所分類指數的客觀強弱。'],
   };
   await mkdir(dirname(OUTPUT), { recursive: true });
   await writeFile(OUTPUT, `${JSON.stringify(latest, null, 2)}\n`);

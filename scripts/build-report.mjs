@@ -113,7 +113,7 @@ async function summarizeNews(news, market) {
   const headlines = news.map(x => `- ${x.title}（${x.publisher}）`).join('\n');
   const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日的國際、台股、半導體與總經事件；只採用工具限制內的可信來源，官方機構、交易所、公司 IR 優先，其次才是 Reuters、Bloomberg、WSJ、CNA、經濟日報與鉅亨。不可引用社群、部落格、論壇或來源不明的內容。
 只根據查證結果、以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
-JSON 格式：{"events":[{"title":"中文事件標題","summary":"30~50字市場解讀"}],"five":["30~50字"],"macro":["30~50字"],"readings":{"tw":"30~50字台股判讀","sector":"30~50字產業判讀","portfolio":"30~50字持股判讀","watch":"30~50字觀察清單判讀"}}。
+JSON 格式：{"events":[{"title":"中文事件標題","summary":"30~50字市場解讀"}],"five":["30~50字"],"macro":["30~50字"],"readings":{"tw":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"},"sector":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"},"portfolio":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"},"watch":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"}}}。readings 每個欄位各25~45字，必須引用提供數字或查證事件，不能空泛或提出交易指令。
 events 最多5則；five 固定5則；macro 至少3則。只採用報告日當日或前5日的新事件；較舊政策或數據不得當作最新事件。不得把交易所 API 更新、一般資料頁面或無投資影響的新聞列入 events。每則須具體說明「事件→受影響市場／族群→接下來要驗證的數字或時點」。若無法從可信來源支持因果，明確寫「原因待原文確認」。搜尋總次數不得超過8次。
 
 市場數字：${JSON.stringify(market)}

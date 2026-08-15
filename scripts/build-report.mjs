@@ -84,6 +84,10 @@ async function fetchMopsPage(body) {
   throw lastError;
 }
 function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')); }
+// MOPS uses both the formal 「法人說明會」 and the issuer wording 「線上法說會」.
+// Include only events explicitly hosted by the issuer itself; exclude broker and
+// third-party conferences even if they mention an investor presentation.
+const isIssuerHostedMopsCall = detail => /本公司(?:將)?(?:召開|舉辦).*?(?:法人說明會|法說會)/.test(detail);
 async function fetchMopsCalendar() {
   const now = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(now.getTime() + 7 * 86_400_000);
   const months = [...new Set([now, end].map(d => ({ year:String(d.getFullYear() - 1911), month:String(d.getMonth() + 1).padStart(2, '0') })) .map(x => `${x.year}-${x.month}`))].map(x => { const [year, month] = x.split('-'); return { year, month }; });
@@ -97,7 +101,7 @@ async function fetchMopsCalendar() {
   const seen = new Set();
   return rows.map(cells => ({ code:cells[0], name:cells[1], date:cells[2], time:cells[3], place:cells[4], detail:cells[5], source:sourceInfo })).filter(item => {
     if (!/^\d{4}$/.test(item.code)) return false;
-    if (!/本公司(?:將)?(?:召開|舉辦).*法人說明會/.test(item.detail)) return false;
+    if (!isIssuerHostedMopsCall(item.detail)) return false;
     const match = item.date.match(/(\d{3,4})\/(\d{1,2})\/(\d{1,2})/); if (!match) return false;
     const year = Number(match[1]) + (match[1].length === 3 ? 1911 : 0), event = new Date(`${year}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}T00:00:00+08:00`);
     const key = `${item.code}-${item.date}-${item.time}`; if (event < now || event > end || seen.has(key)) return false; seen.add(key); return true;

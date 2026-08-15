@@ -16,6 +16,11 @@ const TWSE = 'https://openapi.twse.com.tw/v1';
 const TWSE_RWD = 'https://www.twse.com.tw/rwd/zh';
 const TPEX = 'https://www.tpex.org.tw/openapi/v1';
 const YAHOO = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const TRUSTED_NEWS_DOMAINS = [
+  'twse.com.tw', 'tpex.org.tw', 'mops.twse.com.tw', 'cna.com.tw', 'money.udn.com', 'news.cnyes.com',
+  'federalreserve.gov', 'bls.gov', 'treasury.gov', 'home.treasury.gov', 'eia.gov', 'sec.gov',
+  'reuters.com', 'bloomberg.com', 'wsj.com', 'finance.yahoo.com',
+];
 const REVENUE_URLS = [
   `${TWSE}/opendata/t187ap05_L`,
   `${TPEX}/mopsfin_t187ap05_O`,
@@ -106,15 +111,16 @@ async function fetchNews(query) {
 async function summarizeNews(news, market) {
   if (!process.env.OPENAI_API_KEY) return { events: [], five: [], macro: [], error: 'OPENAI_API_KEY 未設定' };
   const headlines = news.map(x => `- ${x.title}（${x.publisher}）`).join('\n');
-  const prompt = `你是台股盤前研究助手。只根據以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
+  const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日的國際、台股、半導體與總經事件；只採用工具限制內的可信來源，官方機構、交易所、公司 IR 優先，其次才是 Reuters、Bloomberg、WSJ、CNA、經濟日報與鉅亨。不可引用社群、部落格、論壇或來源不明的內容。
+只根據查證結果、以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
 JSON 格式：{"events":[{"title":"中文事件標題","summary":"30~50字市場解讀"}],"five":["30~50字"],"macro":["30~50字"],"readings":{"tw":"30~50字台股判讀","sector":"30~50字產業判讀","portfolio":"30~50字持股判讀","watch":"30~50字觀察清單判讀"}}。
-events 最多5則；five 固定5則；macro 至少3則。若標題不足以支持因果，明確寫「原因待原文確認」，但仍交代應追蹤的數字或風險。
+events 最多5則；five 固定5則；macro 至少3則。若無法從可信來源支持因果，明確寫「原因待原文確認」，但仍交代應追蹤的數字或風險。搜尋總次數不得超過8次。
 
 市場數字：${JSON.stringify(market)}
 
 新聞標題：
 ${headlines}`;
-  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'minimal' }, input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(110_000) });
+  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'minimal' }, tools: [{ type: 'web_search', filters: { allowed_domains: TRUSTED_NEWS_DOMAINS } }], max_tool_calls: 8, input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(110_000) });
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
   const payload = await response.json();
   const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');

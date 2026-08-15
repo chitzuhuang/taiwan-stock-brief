@@ -62,6 +62,26 @@ async function getJson(url) {
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
+async function postText(url, body) {
+  const response = await fetch(url, { method:'POST', headers:{ 'content-type':'application/x-www-form-urlencoded', 'user-agent':'TaiwanPremarketBrief/1.0' }, body:new URLSearchParams(body), signal:AbortSignal.timeout(20_000) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
+}
+function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')); }
+async function fetchMopsCalendar() {
+  const now = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(now.getTime() + 7 * 86_400_000);
+  const months = [...new Set([now, end].map(d => ({ year:String(d.getFullYear() - 1911), month:String(d.getMonth() + 1).padStart(2, '0') })) .map(x => `${x.year}-${x.month}`))].map(x => { const [year, month] = x.split('-'); return { year, month }; });
+  const requests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => postText('https://mopsov.twse.com.tw/mops/web/ajax_t100sb02_1', { step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
+  const pages = await Promise.all(requests), sourceInfo = source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表');
+  const rows = pages.flatMap(page => page.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? []).map(row => [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(match => mopsText(match[1]))).filter(cells => cells.length >= 5);
+  const seen = new Set();
+  return rows.map(cells => ({ code:cells[0], name:cells[1], date:cells[2], time:cells[3], place:cells[4], detail:cells[5], source:sourceInfo })).filter(item => {
+    if (!/^\d{4}$/.test(item.code)) return false;
+    const match = item.date.match(/(\d{3,4})\/(\d{1,2})\/(\d{1,2})/); if (!match) return false;
+    const year = Number(match[1]) + (match[1].length === 3 ? 1911 : 0), event = new Date(`${year}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}T00:00:00+08:00`);
+    const key = `${item.code}-${item.date}-${item.time}`; if (event < now || event > end || seen.has(key)) return false; seen.add(key); return true;
+  });
+}
 async function settled(task) { try { return await task(); } catch (error) { return { error: clean(error.message) }; } }
 
 function lookup(row, names) {
@@ -335,7 +355,7 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot] = await Promise.all([
+  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -353,6 +373,7 @@ async function main() {
     settled(() => fetchNews('Federal Reserve inflation oil markets')),
     settled(() => fetchNews('Taiwan stock market semiconductor')),
     settled(() => getJson(PREVIOUS_SNAPSHOT_URL)),
+    settled(() => fetchMopsCalendar()),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -411,7 +432,8 @@ async function main() {
         ...commonStockEvents(punish, source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), { activeOnly: true }),
         ...commonStockEvents(tpexDisposals, source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), { activeOnly: true }),
       ],
-      sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), tpexDisposals: source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票') },
+      calendar: mopsCalendar.error ? [] : mopsCalendar.filter(item => heldCodes.has(item.code) || observation.flatMap(group => group.stocks).some(stock => stock.code === item.code)),
+      sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), tpexDisposals: source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), calendar: source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表') },
     },
     unavailable: ['法說市場共識、DRAM 現貨/合約價與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。', '產業漲跌原因須使用可授權的新聞／公告來源；目前只呈現交易所分類指數的客觀強弱。'],
   };

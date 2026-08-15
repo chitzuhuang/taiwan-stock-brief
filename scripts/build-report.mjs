@@ -106,7 +106,14 @@ async function fetchNews(query) {
 async function summarizeNews(news, market) {
   if (!process.env.OPENAI_API_KEY) return { events: [], five: [], macro: [], error: 'OPENAI_API_KEY 未設定' };
   const headlines = news.map(x => `- ${x.title}（${x.publisher}）`).join('\n');
-  const prompt = `你是台股盤前研究助手。只根據以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON，不得捏造新聞內文、數字、公司或日期。events 產生最多5則，每則 {title,summary}；summary 35~55字，說明為何值得注意。five 產生5條、每條35~55字，作為今日最該注意事項。macro 產生至少3條、每條35~55字，聚焦通膨、利率、美元、油價或景氣。若標題不足以支持結論，要明說「需閱讀原文確認」。\n\n市場數字：${JSON.stringify(market)}\n\n新聞標題：\n${headlines}`;
+  const prompt = `你是台股盤前研究助手。只根據以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
+JSON 格式：{"events":[{"title":"中文事件標題","summary":"30~50字市場解讀"}],"five":["30~50字"],"macro":["30~50字"],"readings":{"tw":"30~50字台股判讀","sector":"30~50字產業判讀","portfolio":"30~50字持股判讀","watch":"30~50字觀察清單判讀"}}。
+events 最多5則；five 固定5則；macro 至少3則。若標題不足以支持因果，明確寫「原因待原文確認」，但仍交代應追蹤的數字或風險。
+
+市場數字：${JSON.stringify(market)}
+
+新聞標題：
+${headlines}`;
   const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'minimal' }, input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(110_000) });
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
   const payload = await response.json();
@@ -275,7 +282,15 @@ async function main() {
   const breadth = { up: allMarketQuotes.filter(x=>x.pct>0).length, down:allMarketQuotes.filter(x=>x.pct<0).length, flat:allMarketQuotes.filter(x=>x.pct===0).length, turnover:allMarketQuotes.reduce((sum,x)=>sum+(x.value||0),0), topTurnover:allMarketQuotes.sort((a,b)=>(b.value||0)-(a.value||0)).slice(0,20).reduce((sum,x)=>sum+(x.value||0),0) };
   const rankSource = source(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`, 'TWSE 個股法人買賣超');
   const newsItems = [...(globalNews.error ? [] : globalNews), ...(taiwanNews.error ? [] : taiwanNews)];
-  const summaryResult = await settled(() => summarizeNews(newsItems, { dow:us.quotes.find(x=>x.symbol==='^DJI'), nasdaq:us.quotes.find(x=>x.symbol==='^IXIC'), dollar:us.quotes.find(x=>x.symbol==='DX-Y.NYB'), yield:us.quotes.find(x=>x.symbol==='^TNX'), oil:us.quotes.find(x=>x.symbol==='CL=F') }));
+  const marketSummary = buildMarketSummary(indexRows, institutional);
+  const sectorTrends = sectorPulse(marketSummary.sectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name)));
+  const summaryResult = await settled(() => summarizeNews(newsItems, {
+    dow:us.quotes.find(x=>x.symbol==='^DJI'), nasdaq:us.quotes.find(x=>x.symbol==='^IXIC'), dollar:us.quotes.find(x=>x.symbol==='DX-Y.NYB'), yield:us.quotes.find(x=>x.symbol==='^TNX'), oil:us.quotes.find(x=>x.symbol==='CL=F'),
+    taiex:marketSummary.taiex, otc:us.quotes.find(x=>x.symbol==='^TWOII'), breadth,
+    sectors:{ strong:sectorTrends.slice(0,3).map(x=>({name:x.name,pct:x.pct,weekPct:x.weekPct,monthPct:x.monthPct})), weak:sectorTrends.slice(-3).map(x=>({name:x.name,pct:x.pct,weekPct:x.weekPct,monthPct:x.monthPct})) },
+    portfolio:portfolio.map(x=>({code:x.code,name:x.name,pct:x.pct,volumePct:x.volumePct,revenue:x.revenue&&{yoy:x.revenue.yoy,mom:x.revenue.mom}})),
+    watch:observation.flatMap(g=>g.stocks).slice(0,12).map(x=>({code:x.code,name:x.name,pct:x.pct,volumePct:x.volumePct,revenue:x.revenue&&{yoy:x.revenue.yoy,mom:x.revenue.mom}})),
+  }));
   const latest = {
     schemaVersion: 1,
     generatedAt,
@@ -285,7 +300,7 @@ async function main() {
     news: { global:globalNews.error ? [] : globalNews, taiwan:taiwanNews.error ? [] : taiwanNews },
     newsAnalysis: summaryResult.error ? { events: [], five: [], macro: [], error:summaryResult.error } : summaryResult,
     usGroups: US_GROUPS.map(([title, symbols]) => ({ title, stocks:symbols.map(s=>us.quotes.find(x=>x.symbol===s)).filter(Boolean) })),
-    market: { ...buildMarketSummary(indexRows, institutional), otcIndex:us.quotes.find(x=>x.symbol==='^TWOII'), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorPulse(buildMarketSummary(indexRows, institutional).sectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name))) },
+    market: { ...marketSummary, otcIndex:us.quotes.find(x=>x.symbol==='^TWOII'), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorTrends },
     taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },
     events: {
       notices: commonStockEvents(notices, source(`${TWSE}/announcement/notice`, 'TWSE 注意股票')),

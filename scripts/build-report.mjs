@@ -108,12 +108,65 @@ async function fetchNews(query) {
   const payload = await getJson(url);
   return (payload.news ?? []).slice(0, 3).map(item => ({ title:clean(item.title), publisher:clean(item.publisher), url:item.link, source:source(item.link || url, `Yahoo Finance news API：${clean(item.publisher) || query}`) }));
 }
+function parseTaggedSummary(text) {
+  const section = name => (text.match(new RegExp(`\\[${name}\\]\\s*([\\s\\S]*?)(?=\\n\\[[A-Z:]+\\]|$)`, 'i'))?.[1] ?? '').trim();
+  const bullets = name => section(name).split('\n').map(line => line.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean);
+  const events = bullets('EVENTS').map(line => {
+    const [title, ...rest] = line.split(/[｜|]/);
+    return { title: clean(title), summary: clean(rest.join('｜')) };
+  }).filter(item => item.title && item.summary).slice(0, 5);
+  const reading = id => {
+    const values = {};
+    for (const line of section(`READING:${id}`).split('\n')) {
+      const match = line.match(/^\s*(驅動|事件|證據|影響|驗證)\s*[：:]\s*(.+)\s*$/);
+      if (!match) continue;
+      const key = ({ 驅動: 'event', 事件: 'event', 證據: 'evidence', 影響: 'impact', 驗證: 'verify' })[match[1]];
+      values[key] = clean(match[2]);
+    }
+    return values;
+  };
+  const result = {
+    events,
+    five: bullets('FIVE').slice(0, 5),
+    macro: bullets('MACRO').slice(0, 5),
+    readings: Object.fromEntries(['tw', 'sector', 'portfolio', 'watch'].map(id => [id, reading(id)])),
+  };
+  if (!result.events.length || result.five.length < 5 || result.macro.length < 3) throw new Error(`OpenAI summary tags incomplete: ${text.slice(0, 900)}`);
+  return result;
+}
 async function summarizeNews(news, market) {
   if (!process.env.OPENAI_API_KEY) return { events: [], five: [], macro: [], error: 'OPENAI_API_KEY 未設定' };
   const headlines = news.map(x => `- ${x.title}（${x.publisher}）`).join('\n');
   const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日的國際、台股、半導體與總經事件；只採用工具限制內的可信來源，官方機構、交易所、公司 IR 優先，其次才是 Reuters、Bloomberg、WSJ、CNA、經濟日報與鉅亨。不可引用社群、部落格、論壇或來源不明的內容。
-只根據查證結果、以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
-JSON 格式：{"events":[{"title":"中文事件標題","summary":"30~50字市場解讀"}],"five":["30~50字"],"macro":["30~50字"],"readings":{"tw":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"},"sector":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"},"portfolio":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"},"watch":{"event":"驅動事件","evidence":"數據證據","impact":"盤面影響","verify":"後續驗證"}}}。readings 每個欄位各25~45字，必須引用提供數字或查證事件，不能空泛或提出交易指令。
+只根據查證結果、以下新聞標題和市場數字，以繁體中文輸出；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
+嚴格使用下列純文字標籤格式，不要 Markdown、不要 JSON、不要標籤以外的前言或結語：
+[EVENTS]
+- 中文事件標題｜30~50字市場解讀
+[FIVE]
+- 30~50字今日最該注意事項
+[MACRO]
+- 30~50字總經／商品事件
+[READING:tw]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+[READING:sector]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+[READING:portfolio]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+[READING:watch]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+EVENTS 最多5則；FIVE 固定5則；MACRO 至少3則。readings 每個欄位必須引用提供數字或查證事件，不能空泛或提出交易指令。
 events 最多5則；five 固定5則；macro 至少3則。只採用報告日當日或前5日的新事件；較舊政策或數據不得當作最新事件。不得把交易所 API 更新、一般資料頁面或無投資影響的新聞列入 events。每則須具體說明「事件→受影響市場／族群→接下來要驗證的數字或時點」。若無法從可信來源支持因果，明確寫「原因待原文確認」。搜尋總次數不得超過8次。
 
 市場數字：${JSON.stringify(market)}
@@ -125,9 +178,7 @@ ${headlines}`;
   const payload = await response.json();
   const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');
   if (!outputText) throw new Error('OpenAI returned empty summary text');
-  const jsonText = outputText.replace(/^```json\s*|\s*```$/g, '').match(/\{[\s\S]*\}/)?.[0];
-  if (!jsonText) throw new Error(`OpenAI did not return JSON summary text: ${JSON.stringify((payload.output ?? []).map(item => ({ type:item.type, status:item.status, contentTypes:(item.content ?? []).map(part => part.type), textLength:(item.content ?? []).reduce((sum, part) => sum + String(part.text ?? '').length, 0) })))}`);
-  try { return JSON.parse(jsonText); } catch (error) { throw new Error(`Web summary JSON parse error: ${error.message}; raw=${jsonText.slice(0, 900)}`); }
+  return parseTaggedSummary(outputText);
 }
 function normalizeIndex(row, url) {
   const sign = clean(row['漲跌']) === '-' ? -1 : 1;

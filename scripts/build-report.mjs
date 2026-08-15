@@ -45,6 +45,13 @@ const GROUPS = [
   ['H', 'IC 設計/邊緣AI', [['3034', '聯詠', 'twse']]], ['I', '矽智財 IP / RISC-V', [['6533', '晶心科', 'twse']]],
   ['J', '封測/先進封裝', [['3711', '日月光投控', 'twse']]], ['K', 'AI 伺服器組裝/ODM', [['2382', '廣達', 'twse']]],
 ];
+// MOPS' unfiltered monthly response occasionally omits individual issuers.  Keep
+// the comprehensive query for the whole market, then query every holding/watch
+// issuer by code as a verification pass and merge the two official responses.
+const TRACKED_MOPS_ISSUERS = [...new Map([
+  ...PORTFOLIO.map(([code, , venue]) => [code, venue === 'tpex' ? 'otc' : 'sii']),
+  ...GROUPS.flatMap(([, , stocks]) => stocks.map(([code, , venue]) => [code, venue === 'tpex' ? 'otc' : 'sii'])),
+]).entries()].map(([code, TYPEK]) => ({ code, TYPEK }));
 const US = [
   ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'], ['^TWOII', '櫃買指數'],
   ['TSM', '台積電 ADR'], ['NVDA', '輝達'], ['MU', '美光'], ['AMD', '超微'], ['INTC', '英特爾'], ['AVGO', '博通'], ['UMC', '聯電 ADR'],
@@ -80,8 +87,12 @@ function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace
 async function fetchMopsCalendar() {
   const now = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(now.getTime() + 7 * 86_400_000);
   const months = [...new Set([now, end].map(d => ({ year:String(d.getFullYear() - 1911), month:String(d.getMonth() + 1).padStart(2, '0') })) .map(x => `${x.year}-${x.month}`))].map(x => { const [year, month] = x.split('-'); return { year, month }; });
-  const requests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
-  const pages = await Promise.all(requests), sourceInfo = source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表');
+  const wholeMarketRequests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
+  const verificationRequests = months.flatMap(({ year, month }) => TRACKED_MOPS_ISSUERS.map(({ code, TYPEK }) => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:code })));
+  const settledPages = await Promise.allSettled([...wholeMarketRequests, ...verificationRequests]);
+  const pages = settledPages.filter(result => result.status === 'fulfilled').map(result => result.value);
+  if (!pages.length) throw new Error('MOPS 法人說明會資料無法取得');
+  const sourceInfo = source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表');
   const rows = pages.flatMap(page => page.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? []).map(row => [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(match => mopsText(match[1]))).filter(cells => cells.length >= 5);
   const seen = new Set();
   return rows.map(cells => ({ code:cells[0], name:cells[1], date:cells[2], time:cells[3], place:cells[4], detail:cells[5], source:sourceInfo })).filter(item => {

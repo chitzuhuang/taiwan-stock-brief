@@ -86,6 +86,7 @@ async function fetchMopsCalendar() {
   const seen = new Set();
   return rows.map(cells => ({ code:cells[0], name:cells[1], date:cells[2], time:cells[3], place:cells[4], detail:cells[5], source:sourceInfo })).filter(item => {
     if (!/^\d{4}$/.test(item.code)) return false;
+    if (!/本公司(?:將)?(?:召開|舉辦).*法人說明會/.test(item.detail)) return false;
     const match = item.date.match(/(\d{3,4})\/(\d{1,2})\/(\d{1,2})/); if (!match) return false;
     const year = Number(match[1]) + (match[1].length === 3 ? 1911 : 0), event = new Date(`${year}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}T00:00:00+08:00`);
     const key = `${item.code}-${item.date}-${item.time}`; if (event < now || event > end || seen.has(key)) return false; seen.add(key); return true;
@@ -97,14 +98,14 @@ function upcomingDividends(payload, codes) {
   return (payload?.data ?? []).map(row => Object.fromEntries(fields.map((field, index) => [field, row[index]]))).map(row => {
     const date = rocDate(row['除權除息日期']);
     return { code:clean(row['股票代號']), name:clean(row['名稱']), date, time:'', place:'除權息', detail:`${clean(row['除權息'])}｜現金股利 ${number(row['現金股利']).toFixed(2)} 元／股；無償配股率 ${number(row['無償配股率']).toFixed(4)}`, source:src };
-  }).filter(item => codes.has(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
+  }).filter(item => /^\d{4}$/.test(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
 }
 function upcomingTpexDividends(rows, codes) {
   const start = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(start.getTime() + 7 * 86_400_000), src = source('https://www.tpex.org.tw/zh-tw/announce/market/ex/announce.html', 'TPEx 除權除息預告表');
   return (Array.isArray(rows) ? rows : []).map(row => {
     const raw = clean(row.ExRrightsExDividendDate), date = /^\d{7}$/.test(raw) ? `${Number(raw.slice(0,3))+1911}-${raw.slice(3,5)}-${raw.slice(5,7)}` : null;
     return { code:clean(row.SecuritiesCompanyCode), name:clean(row.CompanyName), date, time:'', place:'除權息', detail:`${clean(row.ExRrightsExDividend)}｜現金股利 ${number(row.CashDividend).toFixed(2)} 元／股；無償配股率 ${number(row.StockDividendRatio).toFixed(4)}`, source:src };
-  }).filter(item => codes.has(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
+  }).filter(item => /^\d{4}$/.test(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
 }
 async function settled(task) { try { return await task(); } catch (error) { return { error: clean(error.message) }; } }
 
@@ -411,8 +412,8 @@ async function main() {
   const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const trackedCodes = new Set([...heldCodes, ...GROUPS.flatMap(([, , stocks]) => stocks.map(stock => stock[0]))]);
-  const currentMopsEvents = mopsCalendar.error ? [] : mopsCalendar.filter(item => trackedCodes.has(item.code));
-  const priorMopsEvents = (previousSnapshot?.events?.calendar ?? []).filter(item => trackedCodes.has(item.code) && /MOPS/.test(item.source?.label ?? ''));
+  const currentMopsEvents = mopsCalendar.error ? [] : mopsCalendar;
+  const priorMopsEvents = (previousSnapshot?.events?.calendar ?? []).filter(item => /MOPS/.test(item.source?.label ?? ''));
   const officialMopsEvents = currentMopsEvents.length ? currentMopsEvents : priorMopsEvents;
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const previousByCode = new Map([...(previousSnapshot?.taiwan?.portfolio ?? []), ...(previousSnapshot?.taiwan?.observation ?? []).flatMap(group => group.stocks ?? [])].map(item => [item.code, item]));

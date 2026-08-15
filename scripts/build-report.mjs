@@ -411,6 +411,9 @@ async function main() {
   const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const trackedCodes = new Set([...heldCodes, ...GROUPS.flatMap(([, , stocks]) => stocks.map(stock => stock[0]))]);
+  const currentMopsEvents = mopsCalendar.error ? [] : mopsCalendar.filter(item => trackedCodes.has(item.code));
+  const priorMopsEvents = (previousSnapshot?.events?.calendar ?? []).filter(item => trackedCodes.has(item.code) && /MOPS/.test(item.source?.label ?? ''));
+  const officialMopsEvents = currentMopsEvents.length ? currentMopsEvents : priorMopsEvents;
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const previousByCode = new Map([...(previousSnapshot?.taiwan?.portfolio ?? []), ...(previousSnapshot?.taiwan?.observation ?? []).flatMap(group => group.stocks ?? [])].map(item => [item.code, item]));
   const keepPreviousQuote = item => {
@@ -460,7 +463,7 @@ async function main() {
         ...commonStockEvents(tpexDisposals, source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), { activeOnly: true }),
       ],
       calendar: [
-        ...(mopsCalendar.error ? [] : mopsCalendar.filter(item => trackedCodes.has(item.code))),
+        ...officialMopsEvents,
         ...(dividendRows.error ? [] : upcomingDividends(dividendRows, trackedCodes)),
         ...(tpexDividendRows.error ? [] : upcomingTpexDividends(tpexDividendRows, trackedCodes)),
       ].sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`)),

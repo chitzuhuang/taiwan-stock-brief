@@ -107,7 +107,7 @@ async function summarizeNews(news, market) {
   if (!process.env.OPENAI_API_KEY) return { events: [], five: [], macro: [], error: 'OPENAI_API_KEY 未設定' };
   const headlines = news.map(x => `- ${x.title}（${x.publisher}）`).join('\n');
   const prompt = `你是台股盤前研究助手。只根據以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON，不得捏造新聞內文、數字、公司或日期。events 產生最多5則，每則 {title,summary}；summary 35~55字，說明為何值得注意。five 產生5條、每條35~55字，作為今日最該注意事項。macro 產生至少3條、每條35~55字，聚焦通膨、利率、美元、油價或景氣。若標題不足以支持結論，要明說「需閱讀原文確認」。\n\n市場數字：${JSON.stringify(market)}\n\n新聞標題：\n${headlines}`;
-  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(45_000) });
+  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'minimal' }, input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(110_000) });
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
   const payload = await response.json();
   const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');

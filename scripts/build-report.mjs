@@ -53,7 +53,7 @@ const US_GROUPS = [['指數與總經', ['^DJI','^GSPC','^IXIC','^SOX','DX-Y.NYB'
 const WEIGHTED = [['2330', '台積電', 'twse'], ['2317', '鴻海', 'twse'], ['2454', '聯發科', 'twse'], ['2308', '台達電', 'twse']];
 
 const source = (url, label) => ({ url, label });
-const todayTaipei = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+const todayTaipei = () => { const parts = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Taipei', year:'numeric', month:'2-digit', day:'2-digit' }).formatToParts(new Date()).reduce((out, part) => ({ ...out, [part.type]:part.value }), {}); return `${parts.year}-${parts.month}-${parts.day}`; };
 const number = value => Number(String(value ?? '').replaceAll(',', '').replaceAll(' ', ''));
 const clean = value => String(value ?? '').trim();
 

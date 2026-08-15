@@ -136,6 +136,7 @@ function parseTaggedSummary(text) {
   const calendarStart = new Date(`${todayTaipei()}T00:00:00+08:00`);
   const calendarEnd = new Date(calendarStart.getTime() + 7 * 86_400_000);
   const calendar = bullets('CALENDAR').filter(item => {
+    if (/(若有|請以|視當週|日常公布|例行)/.test(item)) return false;
     const dateText = item.match(/(\d{4})\/(\d{2})\/(\d{2})/)?.[0]?.replaceAll('/', '-');
     if (!dateText) return false;
     const eventDate = new Date(`${dateText}T00:00:00+08:00`);

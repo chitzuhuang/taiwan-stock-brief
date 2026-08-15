@@ -91,7 +91,7 @@ async function fetchUsQuote(symbol, name, range = '1mo') {
   if (!Number.isFinite(close) || !Number.isFinite(previous)) throw new Error('insufficient chart data');
   const pctFrom = offset => Number.isFinite(closes.at(-offset)) ? +((close / closes.at(-offset) - 1) * 100).toFixed(2) : null;
   const priorVolume = volumes.at(-2), volume = volumes.at(-1);
-  return { symbol, name, close: +close.toFixed(2), change: +(close - previous).toFixed(2), pct: +((close - previous) / previous * 100).toFixed(2), volume, volumePct: Number.isFinite(volume) && Number.isFinite(priorVolume) && priorVolume ? +((volume / priorVolume - 1) * 100).toFixed(2) : null, weekPct: pctFrom(6), monthPct: pctFrom(closes.length), source: source(url, 'Yahoo chart endpoint（非官方）') };
+  return { symbol, name, currency: result?.meta?.currency ?? '', close: +close.toFixed(2), change: +(close - previous).toFixed(2), pct: +((close - previous) / previous * 100).toFixed(2), volume, volumePct: Number.isFinite(volume) && Number.isFinite(priorVolume) && priorVolume ? +((volume / priorVolume - 1) * 100).toFixed(2) : null, weekPct: pctFrom(6), monthPct: pctFrom(closes.length), source: source(url, 'Yahoo chart endpoint（非官方）') };
 }
 async function fetchMarket() {
   const results = await Promise.all(US.map(([symbol, name]) => settled(() => fetchUsQuote(symbol, name))));
@@ -165,13 +165,30 @@ function sectorPulse(sectors, priorWeek = [], priorMonth = []) {
   const w = new Map(priorWeek.map(x => [x.name, x.close])), m = new Map(priorMonth.map(x => [x.name, x.close]));
   return sectors.map(x => ({ ...x, weekPct: w.has(x.name) ? +((x.close / w.get(x.name) - 1) * 100).toFixed(2) : null, monthPct: m.has(x.name) ? +((x.close / m.get(x.name) - 1) * 100).toFixed(2) : null }));
 }
+function parseRwdIndices(payload, url) {
+  const table = (payload?.tables ?? []).find(t => t.fields?.includes('指數'));
+  if (!table) return [];
+  return (table.data ?? []).map(row => normalizeIndex(Object.fromEntries(table.fields.map((field, i) => [field, row[i]])), url));
+}
+async function historicalIndices(daysAgo) {
+  let lastError = '';
+  for (let offset = 0; offset < 5; offset += 1) {
+    const day = new Date(Date.now() - (daysAgo + offset) * 86_400_000).toLocaleDateString('en-CA', { timeZone:'Asia/Taipei' }).replaceAll('-', '');
+    const url = `${TWSE_RWD}/afterTrading/MI_INDEX?date=${day}&type=ALLBUT0999&response=json`;
+    const result = await settled(() => getJson(url));
+    const rows = result.error ? [] : parseRwdIndices(result, url);
+    if (rows.length) return { rows, error:'' };
+    lastError = result.error || 'empty index response';
+  }
+  return { rows: [], error:lastError };
+}
 function reportDate() {
   const parts = TAIPEI.formatToParts(new Date()).reduce((acc, x) => ({ ...acc, [x.type]: x.value }), {});
   return { date: `${parts.year}-${parts.month}-${parts.day}`, weekday: parts.weekday };
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials] = await Promise.all([
+  const [tw, us, notices, punish, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -184,6 +201,7 @@ async function main() {
     settled(() => getJson(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`)),
     settled(() => getJson(`${TWSE}/opendata/t187ap14_L`)),
     settled(() => getJson(`${TPEX}/mopsfin_t187ap14_O`)),
+    historicalIndices(7), historicalIndices(31),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -192,7 +210,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const rawPortfolio = PORTFOLIO.map(stock => portfolioItem(stock, allQuotes, revenueMap));
@@ -214,7 +232,7 @@ async function main() {
     verification: { sourceErrors, note: '未取得或無授權資料一律標示為無法查證；不以推估、舊資料或媒體文字取代。' },
     usMarket: us.quotes,
     usGroups: US_GROUPS.map(([title, symbols]) => ({ title, stocks:symbols.map(s=>us.quotes.find(x=>x.symbol===s)).filter(Boolean) })),
-    market: { ...buildMarketSummary(indexRows, institutional), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource) },
+    market: { ...buildMarketSummary(indexRows, institutional), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorPulse(buildMarketSummary(indexRows, institutional).sectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name))) },
     taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },
     events: { notices: Array.isArray(notices) ? notices : notices.data ?? [], punishments: Array.isArray(punish) ? punish : punish.data ?? [], sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票') } },
     unavailable: ['法說市場共識、DRAM 現貨/合約價與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。', '產業漲跌原因須使用可授權的新聞／公告來源；目前只呈現交易所分類指數的客觀強弱。'],

@@ -97,6 +97,11 @@ async function fetchMarket() {
   const results = await Promise.all(US.map(([symbol, name]) => settled(() => fetchUsQuote(symbol, name))));
   return { quotes: results.filter(x => !x.error), errors: results.filter(x => x.error).map(x => x.error) };
 }
+async function fetchNews(query) {
+  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&newsCount=3`;
+  const payload = await getJson(url);
+  return (payload.news ?? []).slice(0, 3).map(item => ({ title:clean(item.title), publisher:clean(item.publisher), url:item.link, source:source(item.link || url, `Yahoo Finance news API：${clean(item.publisher) || query}`) }));
+}
 function normalizeIndex(row, url) {
   const sign = clean(row['漲跌']) === '-' ? -1 : 1;
   return {
@@ -188,7 +193,7 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth] = await Promise.all([
+  const [tw, us, notices, punish, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -202,6 +207,8 @@ async function main() {
     settled(() => getJson(`${TWSE}/opendata/t187ap14_L`)),
     settled(() => getJson(`${TPEX}/mopsfin_t187ap14_O`)),
     historicalIndices(7), historicalIndices(31),
+    settled(() => fetchNews('Federal Reserve inflation oil markets')),
+    settled(() => fetchNews('Taiwan stock market semiconductor')),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -210,7 +217,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const rawPortfolio = PORTFOLIO.map(stock => portfolioItem(stock, allQuotes, revenueMap));
@@ -231,6 +238,7 @@ async function main() {
     reportDate: { ...reportDate(), isHoliday, source: source(`${TWSE}/holidaySchedule/holidaySchedule?response=json`, 'TWSE 交易日曆') },
     verification: { sourceErrors, note: '未取得或無授權資料一律標示為無法查證；不以推估、舊資料或媒體文字取代。' },
     usMarket: us.quotes,
+    news: { global:globalNews.error ? [] : globalNews, taiwan:taiwanNews.error ? [] : taiwanNews },
     usGroups: US_GROUPS.map(([title, symbols]) => ({ title, stocks:symbols.map(s=>us.quotes.find(x=>x.symbol===s)).filter(Boolean) })),
     market: { ...buildMarketSummary(indexRows, institutional), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorPulse(buildMarketSummary(indexRows, institutional).sectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name))) },
     taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },

@@ -3,3 +3,5 @@
 .report-navbar nav{flex:1;min-width:0}.report-navbar-date{flex:none;color:var(--weak);font-size:12.5px;white-space:nowrap}#brief .report-kpi-value{font-size:44px}@media (max-width:520px){.report-navbar-date{font-size:11.5px}}
 .report-kpi-tile{min-width:0}.report-kpi-tile .report-source{max-width:100%;min-width:0}.report-kpi-tile .report-source span{overflow-wrap:anywhere}.report-kpi-tile{overflow:hidden}@media (max-width:520px){.report-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .report-compact-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.report-card-summary{margin:10px 0 0;color:var(--muted);font-size:15.5px}.report-position{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);font-size:14.5px}.report-tracked{font-weight:750} (max-width:520px){.report-compact-grid{grid-template-columns:1fr}}
+
+.market-up{color:#e66767!important}.market-down{color:#0ca30c!important}

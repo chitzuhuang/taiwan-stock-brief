@@ -110,7 +110,9 @@ async function summarizeNews(news, market) {
   const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', input: prompt, text: { format: { type: 'json_object' } } }), signal: AbortSignal.timeout(45_000) });
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
   const payload = await response.json();
-  return JSON.parse(payload.output_text || '{}');
+  const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');
+  if (!outputText) throw new Error('OpenAI returned empty summary text');
+  return JSON.parse(outputText.replace(/^```json\s*|\s*```$/g, ''));
 }
 function normalizeIndex(row, url) {
   const sign = clean(row['漲跌']) === '-' ? -1 : 1;

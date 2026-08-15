@@ -483,6 +483,7 @@ async function main() {
   const officialMopsEvents = currentMopsEvents.length ? currentMopsEvents : priorMopsEvents;
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
   const previousByCode = new Map([...(previousSnapshot?.taiwan?.portfolio ?? []), ...(previousSnapshot?.taiwan?.observation ?? []).flatMap(group => group.stocks ?? [])].map(item => [item.code, item]));
+  const previousIsSameReportDate = previousSnapshot?.reportDate?.date === date;
   const keepPreviousQuote = item => {
     const previous = previousByCode.get(item.code);
     if (!item.unavailable || !previous?.close) return item;
@@ -494,7 +495,7 @@ async function main() {
   };
   const withOfficialVolumeChange = item => {
     const previous = previousByCode.get(item.code);
-    const volumePct = Number.isFinite(item.boardLots) && Number.isFinite(previous?.boardLots) && previous.boardLots > 0 ? +((item.boardLots / previous.boardLots - 1) * 100).toFixed(2) : null;
+    const volumePct = !previousIsSameReportDate && Number.isFinite(item.boardLots) && Number.isFinite(previous?.boardLots) && previous.boardLots > 0 ? +((item.boardLots / previous.boardLots - 1) * 100).toFixed(2) : null;
     return { ...item, volumePct };
   };
   const rawPortfolio = PORTFOLIO.map(stock => withOfficialVolumeChange(withOfficialBoardLots(keepPreviousQuote(portfolioItem(stock, allQuotes, revenueMap)))));

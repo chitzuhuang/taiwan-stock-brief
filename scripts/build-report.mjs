@@ -26,6 +26,7 @@ const REVENUE_URLS = [
   `${TPEX}/mopsfin_t187ap05_O`,
 ];
 const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
+const PREVIOUS_SNAPSHOT_URL = 'https://chitzuhuang.github.io/taiwan-stock-brief/data/latest.json';
 
 const PORTFOLIO = [
   // Final field is the broker net cost basis from the supplied holdings screen (fees/taxes included).
@@ -322,7 +323,7 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews] = await Promise.all([
+  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot] = await Promise.all([
     fetchTaiwanQuotes(), fetchMarket(),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
@@ -339,6 +340,7 @@ async function main() {
     historicalIndices(7), historicalIndices(31),
     settled(() => fetchNews('Federal Reserve inflation oil markets')),
     settled(() => fetchNews('Taiwan stock market semiconductor')),
+    settled(() => getJson(PREVIOUS_SNAPSHOT_URL)),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -350,8 +352,14 @@ async function main() {
   const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
-  const rawPortfolio = PORTFOLIO.map(stock => portfolioItem(stock, allQuotes, revenueMap));
-  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...addRevenue(selectQuote(stock, allQuotes), revenueMap), held: heldCodes.has(stock[0]) })) }));
+  const previousByCode = new Map([...(previousSnapshot?.taiwan?.portfolio ?? []), ...(previousSnapshot?.taiwan?.observation ?? []).flatMap(group => group.stocks ?? [])].map(item => [item.code, item]));
+  const keepPreviousQuote = item => {
+    const previous = previousByCode.get(item.code);
+    if (!item.unavailable || !previous?.close) return item;
+    return { ...previous, shares:item.shares, cost:item.cost, netCost:item.netCost, fallback:true, source:{ ...previous.source, label:`${previous.source?.label ?? '交易所資料'}（前次成功快照）` } };
+  };
+  const rawPortfolio = PORTFOLIO.map(stock => keepPreviousQuote(portfolioItem(stock, allQuotes, revenueMap)));
+  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...keepPreviousQuote(addRevenue(selectQuote(stock, allQuotes), revenueMap)), held: heldCodes.has(stock[0]) })) }));
   const enriched = await enrichHistory([...rawPortfolio, ...rawObservation.flatMap(g => g.stocks), ...WEIGHTED.map(x => selectQuote(x, allQuotes))]);
   const history = new Map(enriched.map(x => [x.code, x]));
   const portfolio = rawPortfolio.map(x => ({ ...x, ...history.get(x.code) }));
@@ -364,7 +372,8 @@ async function main() {
   const rankSource = source(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`, 'TWSE 個股法人買賣超');
   const newsItems = [...(globalNews.error ? [] : globalNews), ...(taiwanNews.error ? [] : taiwanNews)];
   const marketSummary = buildMarketSummary(indexRows, institutional);
-  const sectorTrends = sectorPulse(marketSummary.sectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name)));
+  const liveSectors = marketSummary.sectors;
+  const sectorTrends = liveSectors.length ? sectorPulse(liveSectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name))) : (previousSnapshot?.market?.sectorPulse ?? []).map(item => ({ ...item, fallback:true, source:{ ...item.source, label:`${item.source?.label ?? '交易所類股資料'}（前次成功快照）` } }));
   const summaryResult = await settled(() => summarizeNews(newsItems, {
     dow:us.quotes.find(x=>x.symbol==='^DJI'), nasdaq:us.quotes.find(x=>x.symbol==='^IXIC'), dollar:us.quotes.find(x=>x.symbol==='DX-Y.NYB'), yield:us.quotes.find(x=>x.symbol==='^TNX'), oil:us.quotes.find(x=>x.symbol==='CL=F'),
     taiex:marketSummary.taiex, otc:us.quotes.find(x=>x.symbol==='^TWOII'), breadth,

@@ -67,7 +67,10 @@ const number = value => Number(String(value ?? '').replaceAll(',', '').replaceAl
 const clean = value => String(value ?? '').trim();
 
 async function getJson(url) {
-  const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'TaiwanPremarketBrief/1.0' }, signal: AbortSignal.timeout(20_000) });
+  // TPEx open-data responses can exceed 20 seconds while the monthly reports
+  // are being published.  A longer official-source timeout prevents a blank
+  // revenue/financial table caused solely by an impatient request.
+  const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'TaiwanPremarketBrief/1.0' }, signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -84,10 +87,15 @@ async function fetchMopsPage(body) {
   throw lastError;
 }
 function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')); }
-// MOPS uses both the formal 「法人說明會」 and the issuer wording 「線上法說會」.
-// Include only events explicitly hosted by the issuer itself; exclude broker and
-// third-party conferences even if they mention an investor presentation.
-const isIssuerHostedMopsCall = detail => /本公司(?:將)?(?:召開|舉辦).*?(?:法人說明會|法說會)/.test(detail);
+// MOPS issuer-hosted calls are not written consistently: examples include
+// 「亞洲水泥舉辦…線上法說會」、「2026年上半年度營運概況法人說明會」,
+// and 「本公司舉行…法人說明會」.  Include all of these official notices,
+// but leave out events explicitly described as the company attending a broker
+// or third-party presentation.
+const isIssuerHostedMopsCall = detail => {
+  if (!/(?:法人說明會|法說會)/.test(detail)) return false;
+  return !/(?:受邀|受邀請|邀請).{0,36}(?:參加|出席|舉辦)|(?:本公司|公司).{0,16}參加.{0,36}(?:證券|券商|法人說明會|法說會)|(?:證券|券商).{0,20}舉辦/.test(detail);
+};
 async function fetchMopsCalendar() {
   const now = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(now.getTime() + 7 * 86_400_000);
   const months = [...new Set([now, end].map(d => ({ year:String(d.getFullYear() - 1911), month:String(d.getMonth() + 1).padStart(2, '0') })) .map(x => `${x.year}-${x.month}`))].map(x => { const [year, month] = x.split('-'); return { year, month }; });

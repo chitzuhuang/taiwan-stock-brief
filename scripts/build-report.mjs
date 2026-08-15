@@ -109,7 +109,7 @@ async function fetchNews(query) {
   return (payload.news ?? []).slice(0, 3).map(item => ({ title:clean(item.title), publisher:clean(item.publisher), url:item.link, source:source(item.link || url, `Yahoo Finance news API：${clean(item.publisher) || query}`) }));
 }
 function parseTaggedSummary(text) {
-  const section = name => (text.match(new RegExp(`\\[${name}\\]\\s*([\\s\\S]*?)(?=\\n\\[[A-Z:]+\\]|$)`, 'i'))?.[1] ?? '').trim();
+  const section = name => (text.match(new RegExp(`\\[${name}\\]\\s*([\\s\\S]*?)(?=\\n\\[[A-Za-z:]+\\]|$)`, 'i'))?.[1] ?? '').trim();
   const bullets = name => section(name).split('\n').map(line => line.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean);
   const events = bullets('EVENTS').map(line => {
     const [title, ...rest] = line.split(/[｜|]/);
@@ -125,11 +125,19 @@ function parseTaggedSummary(text) {
     }
     return values;
   };
+  const macro = bullets('MACRO').slice(0, 5);
+  const readings = Object.fromEntries(['tw', 'sector', 'portfolio', 'watch'].map(id => [id, reading(id)]));
+  const suppliedFive = bullets('FIVE');
+  const fallbackFive = [
+    ...events.map(item => item.summary),
+    ...macro,
+    ...Object.values(readings).flatMap(item => [item.event, item.evidence, item.impact]).filter(Boolean),
+  ];
   const result = {
     events,
-    five: bullets('FIVE').slice(0, 5),
-    macro: bullets('MACRO').slice(0, 5),
-    readings: Object.fromEntries(['tw', 'sector', 'portfolio', 'watch'].map(id => [id, reading(id)])),
+    five: [...suppliedFive, ...fallbackFive.filter(item => !suppliedFive.includes(item))].slice(0, 5),
+    macro,
+    readings,
   };
   if (!result.events.length || result.five.length < 5 || result.macro.length < 3) throw new Error(`OpenAI summary tags incomplete: ${text.slice(0, 900)}`);
   return result;

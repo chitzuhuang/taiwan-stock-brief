@@ -106,7 +106,7 @@ async function fetchNews(query) {
 async function summarizeNews(news, market) {
   if (!process.env.OPENAI_API_KEY) return { events: [], five: [], macro: [], error: 'OPENAI_API_KEY 未設定' };
   const headlines = news.map(x => `- ${x.title}（${x.publisher}）`).join('\n');
-  const prompt = `你是台股盤前研究助手。只根據以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
+  const prompt = `你是台股盤前研究助手。只根據以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
 JSON 格式：{"events":[{"title":"中文事件標題","summary":"30~50字市場解讀"}],"five":["30~50字"],"macro":["30~50字"],"readings":{"tw":"30~50字台股判讀","sector":"30~50字產業判讀","portfolio":"30~50字持股判讀","watch":"30~50字觀察清單判讀"}}。
 events 最多5則；five 固定5則；macro 至少3則。若標題不足以支持因果，明確寫「原因待原文確認」，但仍交代應追蹤的數字或風險。
 

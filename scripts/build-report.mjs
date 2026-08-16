@@ -15,6 +15,7 @@ const TAIPEI = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year:
 const TWSE = 'https://openapi.twse.com.tw/v1';
 const TWSE_RWD = 'https://www.twse.com.tw/rwd/zh';
 const TPEX = 'https://www.tpex.org.tw/openapi/v1';
+const TPEX_INDEX_PAGE = 'https://www.tpex.org.tw/zh-tw/mainboard/trading/info/indices-pricing.html';
 const YAHOO = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const TRUSTED_NEWS_DOMAINS = [
   'twse.com.tw', 'tpex.org.tw', 'mops.twse.com.tw', 'cna.com.tw', 'money.udn.com', 'news.cnyes.com',
@@ -58,20 +59,12 @@ const TRACKED_MARKET_ISSUERS = [...new Map([
   ...GROUPS.flatMap(([, , stocks]) => stocks.map(([code, , venue]) => [code, venue])),
 ]).entries()].map(([code, venue]) => ({ code, venue }));
 const US = [
-  ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'], ['^TWOII', '櫃買指數'],
+  ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'],
   ['TSM', '台積電 ADR'], ['NVDA', '輝達'], ['MU', '美光'], ['AMD', '超微'], ['INTC', '英特爾'], ['AVGO', '博通'], ['UMC', '聯電 ADR'],
   ['TSLA', '特斯拉'], ['SKHY', 'SK 海力士 ADR'], ['SNDK', 'SanDisk'], ['MRVL', 'Marvell'], ['GOOG', 'Alphabet'], ['GLW', '康寧'], ['IBM', 'IBM'], ['VRT', 'Vertiv'], ['MOD', 'Modine'], ['LITE', 'Lumentum'], ['AAOI', 'Applied Optoelectronics'],
   ['DX-Y.NYB', '美元指數'], ['^TNX', '10年期美債殖利率'], ['CL=F', 'WTI 原油'],
 ];
 const US_GROUPS = [['指數與總經', ['^DJI','^GSPC','^IXIC','^SOX','DX-Y.NYB','^TNX','CL=F']], ['AI 算力／半導體', ['TSM','NVDA','AMD','INTC','AVGO','MRVL','IBM']], ['記憶體', ['MU','SKHY','SNDK']], ['AI 電力／散熱', ['VRT','MOD']], ['光通訊／網路', ['LITE','GLW','AAOI']], ['雲端與電動車', ['GOOG','TSLA','UMC']]];
-const USER_QUOTE_OVERRIDES = {
-  '^GSPC': 776.340,
-  '^TWOII': 400.95,
-};
-const USER_QUOTE_METADATA = {
-  '^GSPC': { name: 'S&P 500', currency: 'USD' },
-  '^TWOII': { name: '櫃買指數', currency: 'TWD' },
-};
 const WEIGHTED = [['2330', '台積電', 'twse'], ['2317', '鴻海', 'twse'], ['2454', '聯發科', 'twse'], ['2308', '台達電', 'twse']];
 
 const source = (url, label) => ({ url, label });
@@ -220,17 +213,18 @@ async function fetchUsQuote(symbol, name, range = '1mo') {
 }
 async function fetchMarket() {
   const results = await Promise.all(US.map(([symbol, name]) => settled(() => fetchUsQuote(symbol, name))));
-  const quotes = results.filter(x => !x.error).map(quote => {
-    const close = USER_QUOTE_OVERRIDES[quote.symbol];
-    return Number.isFinite(close) ? { ...quote, close, change:null, pct:null, source:source('', '使用者提供的修正收盤值') } : quote;
-  });
-  for (const [symbol, close] of Object.entries(USER_QUOTE_OVERRIDES)) {
-    if (!quotes.some(quote => quote.symbol === symbol)) {
-      const { name, currency } = USER_QUOTE_METADATA[symbol];
-      quotes.push({ symbol, name, currency, close, change:null, pct:null, source:source('', '使用者提供的修正收盤值') });
-    }
-  }
-  return { quotes, errors: results.filter(x => x.error).map(x => x.error) };
+  return { quotes: results.filter(x => !x.error), errors: results.filter(x => x.error).map(x => x.error) };
+}
+async function fetchOtcIndex() {
+  const rows = await getJson(`${TPEX}/tpex_index`);
+  const latest = (Array.isArray(rows) ? rows : []).filter(row => Number.isFinite(number(row.Close)) && Number.isFinite(number(row.Change))).at(-1);
+  if (!latest) throw new Error('TPEx 櫃買指數資料為空');
+  const close = number(latest.Close), change = number(latest.Change), previous = close - change;
+  return {
+    symbol: '^TWOII', name: '櫃買指數', currency: 'TWD', close, change,
+    pct: previous ? +(change / previous * 100).toFixed(2) : null,
+    source: source(TPEX_INDEX_PAGE, 'TPEx 上櫃股價指數收盤行情'),
+  };
 }
 async function fetchNews(query) {
   const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&newsCount=3`;
@@ -463,8 +457,8 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows, tpexDividendRows, boardLots] = await Promise.all([
-    fetchTaiwanQuotes(), fetchMarket(),
+  const [tw, us, otcIndexResult, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows, tpexDividendRows, boardLots] = await Promise.all([
+    fetchTaiwanQuotes(), fetchMarket(), settled(() => fetchOtcIndex()),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
     settled(() => getJson(`${TPEX}/tpex_disposal_information`)),
@@ -493,7 +487,7 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error, ...boardLots.errors].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, otcIndexResult.error, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error, ...boardLots.errors].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
   const trackedCodes = new Set([...heldCodes, ...GROUPS.flatMap(([, , stocks]) => stocks.map(stock => stock[0]))]);
   const currentMopsEvents = mopsCalendar.error ? [] : mopsCalendar;
@@ -525,12 +519,11 @@ async function main() {
   const financials = financialMap(listedFinancials, otcFinancials);
   const tracked = [...portfolio, ...observation.flatMap(g => g.stocks)].map(x => ({ ...x, financial: financials.get(x.code) ?? null }));
   const weighted = WEIGHTED.map(x => history.get(x[0]) ?? selectQuote(x, allQuotes));
-  const liveOtcIndex = us.quotes.find(x => x.symbol === '^TWOII');
-  const otcIndex = liveOtcIndex ?? (previousSnapshot?.market?.otcIndex ? {
+  const otcIndex = otcIndexResult.error ? (previousSnapshot?.market?.otcIndex ? {
     ...previousSnapshot.market.otcIndex,
     fallback: true,
     source: { ...previousSnapshot.market.otcIndex.source, label: `${previousSnapshot.market.otcIndex.source?.label ?? '行情資料'}（前次成功快照）` },
-  } : null);
+  } : null) : otcIndexResult;
   const allMarketQuotes = [...tw.twse, ...tw.tpex].filter(x => Number.isFinite(x.pct));
   const breadth = { up: allMarketQuotes.filter(x=>x.pct>0).length, down:allMarketQuotes.filter(x=>x.pct<0).length, flat:allMarketQuotes.filter(x=>x.pct===0).length, turnover:allMarketQuotes.reduce((sum,x)=>sum+(x.value||0),0), topTurnover:allMarketQuotes.sort((a,b)=>(b.value||0)-(a.value||0)).slice(0,20).reduce((sum,x)=>sum+(x.value||0),0) };
   const rankSource = source(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`, 'TWSE 個股法人買賣超');

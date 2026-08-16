@@ -45,10 +45,21 @@ const GROUPS = [
 const US = [
   ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'], ['^TWOII', '櫃買指數'],
   ['TSM', '台積電 ADR'], ['NVDA', '輝達'], ['MU', '美光'], ['AMD', '超微'], ['INTC', '英特爾'], ['AVGO', '博通'], ['UMC', '聯電 ADR'],
-  ['TSLA', '特斯拉'], ['SKHY', 'SK 海力士 ADR'], ['SNDK', 'SanDisk'], ['MRVL', 'Marvell'], ['GOOG', 'Alphabet'], ['GLW', '康寧'], ['IBM', 'IBM'], ['VRT', 'Vertiv'], ['MOD', 'Modine'], ['LITE', 'Lumentum'],
+  ['TSLA', '特斯拉'], ['SKHY', 'SK 海力士 ADR'], ['SNDK', 'SanDisk'], ['MRVL', 'Marvell'], ['GOOG', 'Alphabet'], ['GLW', '康寧'], ['IBM', 'IBM'], ['VRT', 'Vertiv'], ['MOD', 'Modine'], ['LITE', 'Lumentum'], ['AAOI', 'Applied Optoelectronics'],
   ['DX-Y.NYB', '美元指數'], ['^TNX', '10年期美債殖利率'], ['CL=F', 'WTI 原油'],
 ];
-const US_GROUPS = [['指數與總經', ['^DJI','^GSPC','^IXIC','^SOX','DX-Y.NYB','^TNX','CL=F']], ['AI 算力／半導體', ['TSM','NVDA','AMD','INTC','AVGO','MRVL','IBM']], ['記憶體', ['MU','SKHY','SNDK']], ['AI 電力／散熱', ['VRT','MOD']], ['光通訊／網路', ['LITE','GLW']], ['雲端與電動車', ['GOOG','TSLA','UMC']]];
+const US_GROUPS = [['指數與總經', ['^DJI','^GSPC','^IXIC','^SOX','DX-Y.NYB','^TNX','CL=F']], ['AI 算力／半導體', ['TSM','NVDA','AMD','INTC','AVGO','MRVL','IBM']], ['記憶體', ['MU','SKHY','SNDK']], ['AI 電力／散熱', ['VRT','MOD']], ['光通訊／網路', ['LITE','GLW','AAOI']], ['雲端與電動車', ['GOOG','TSLA','UMC']]];
+// These two closes were supplied by the user to correct a delayed upstream feed.
+// Change and percentage fields are cleared deliberately: their source-session
+// reference values were not supplied and must not be inferred.
+const USER_QUOTE_OVERRIDES = {
+  '^GSPC': 776.340,
+  '^TWOII': 400.95,
+};
+const USER_QUOTE_METADATA = {
+  '^GSPC': { name: 'S&P 500', currency: 'USD' },
+  '^TWOII': { name: '櫃買指數', currency: 'TWD' },
+};
 const WEIGHTED = [['2330', '台積電', 'twse'], ['2317', '鴻海', 'twse'], ['2454', '聯發科', 'twse'], ['2308', '台達電', 'twse']];
 
 const source = (url, label) => ({ url, label });
@@ -101,7 +112,17 @@ async function fetchUsQuote(symbol, name, range = '1mo') {
 }
 async function fetchMarket() {
   const results = await Promise.all(US.map(([symbol, name]) => settled(() => fetchUsQuote(symbol, name))));
-  return { quotes: results.filter(x => !x.error), errors: results.filter(x => x.error).map(x => x.error) };
+  const quotes = results.filter(x => !x.error).map(quote => {
+    const close = USER_QUOTE_OVERRIDES[quote.symbol];
+    return Number.isFinite(close) ? { ...quote, close, change:null, pct:null, source:source('', '使用者提供的修正收盤值') } : quote;
+  });
+  for (const [symbol, close] of Object.entries(USER_QUOTE_OVERRIDES)) {
+    if (!quotes.some(quote => quote.symbol === symbol)) {
+      const { name, currency } = USER_QUOTE_METADATA[symbol];
+      quotes.push({ symbol, name, currency, close, change:null, pct:null, source:source('', '使用者提供的修正收盤值') });
+    }
+  }
+  return { quotes, errors: results.filter(x => x.error).map(x => x.error) };
 }
 async function fetchNews(query) {
   const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&newsCount=3`;
@@ -148,7 +169,7 @@ function buildMarketSummary(indexRows, institutional) {
   }));
   return {
     taiex: find('發行量加權股價指數'),
-    indices: ['臺灣50指數', '臺灣中型100指數', '未含電子指數'].map(find).filter(Boolean),
+    indices: ['臺灣中型100指數'].map(find).filter(Boolean),
     sectors: sectors.sort((a, b) => b.pct - a.pct),
     institutions,
     source: source(indexUrl, 'TWSE 大盤分類指數'),

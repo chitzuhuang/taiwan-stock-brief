@@ -213,17 +213,7 @@ async function fetchUsQuote(symbol, name, range = '1mo') {
 }
 async function fetchMarket() {
   const results = await Promise.all(US.map(([symbol, name]) => settled(() => fetchUsQuote(symbol, name))));
-  const quotes = results.filter(x => !x.error).map(quote => {
-    const close = USER_QUOTE_OVERRIDES[quote.symbol];
-    return Number.isFinite(close) ? { ...quote, close, change:null, pct:null, source:source('', '使用者提供的修正收盤值') } : quote;
-  });
-  for (const [symbol, close] of Object.entries(USER_QUOTE_OVERRIDES)) {
-    if (!quotes.some(quote => quote.symbol === symbol)) {
-      const { name, currency } = USER_QUOTE_METADATA[symbol];
-      quotes.push({ symbol, name, currency, close, change:null, pct:null, source:source('', '使用者提供的修正收盤值') });
-    }
-  }
-  return { quotes, errors: results.filter(x => x.error).map(x => x.error) };
+  return { quotes: results.filter(x => !x.error), errors: results.filter(x => x.error).map(x => x.error) };
 }
 async function fetchOtcIndex() {
   const rows = await getJson(`${TPEX}/tpex_index`);

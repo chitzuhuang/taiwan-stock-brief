@@ -15,6 +15,7 @@ const TAIPEI = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year:
 const TWSE = 'https://openapi.twse.com.tw/v1';
 const TWSE_RWD = 'https://www.twse.com.tw/rwd/zh';
 const TPEX = 'https://www.tpex.org.tw/openapi/v1';
+const TPEX_INDEX_PAGE = 'https://www.tpex.org.tw/zh-tw/mainboard/trading/info/indices-pricing.html';
 const YAHOO = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const TRUSTED_NEWS_DOMAINS = [
   'twse.com.tw', 'tpex.org.tw', 'mops.twse.com.tw', 'cna.com.tw', 'money.udn.com', 'news.cnyes.com',
@@ -26,6 +27,10 @@ const REVENUE_URLS = [
   `${TPEX}/mopsfin_t187ap05_O`,
 ];
 const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFut';
+const PREVIOUS_SNAPSHOT_URL = 'https://chitzuhuang.github.io/taiwan-stock-brief/data/latest.json';
+const DIVIDEND_URL = 'https://www.twse.com.tw/exchangeReport/TWT48U?response=json';
+const TPEX_DIVIDEND_URL = 'https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost';
+const MIS_STOCK_INFO_URL = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp';
 
 const PORTFOLIO = [
   // Final field is the broker net cost basis from the supplied holdings screen (fees/taxes included).
@@ -42,35 +47,102 @@ const GROUPS = [
   ['H', 'IC 設計/邊緣AI', [['3034', '聯詠', 'twse']]], ['I', '矽智財 IP / RISC-V', [['6533', '晶心科', 'twse']]],
   ['J', '封測/先進封裝', [['3711', '日月光投控', 'twse']]], ['K', 'AI 伺服器組裝/ODM', [['2382', '廣達', 'twse']]],
 ];
+// MOPS' unfiltered monthly response occasionally omits individual issuers.  Keep
+// the comprehensive query for the whole market, then query every holding/watch
+// issuer by code as a verification pass and merge the two official responses.
+const TRACKED_MOPS_ISSUERS = [...new Map([
+  ...PORTFOLIO.map(([code, , venue]) => [code, venue === 'tpex' ? 'otc' : 'sii']),
+  ...GROUPS.flatMap(([, , stocks]) => stocks.map(([code, , venue]) => [code, venue === 'tpex' ? 'otc' : 'sii'])),
+]).entries()].map(([code, TYPEK]) => ({ code, TYPEK }));
+const TRACKED_MARKET_ISSUERS = [...new Map([
+  ...PORTFOLIO.map(([code, , venue]) => [code, venue]),
+  ...GROUPS.flatMap(([, , stocks]) => stocks.map(([code, , venue]) => [code, venue])),
+]).entries()].map(([code, venue]) => ({ code, venue }));
 const US = [
-  ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'], ['^TWOII', '櫃買指數'],
+  ['^DJI', '道瓊'], ['^GSPC', 'S&P 500'], ['^IXIC', '那斯達克'], ['^SOX', '費半 SOX'],
   ['TSM', '台積電 ADR'], ['NVDA', '輝達'], ['MU', '美光'], ['AMD', '超微'], ['INTC', '英特爾'], ['AVGO', '博通'], ['UMC', '聯電 ADR'],
   ['TSLA', '特斯拉'], ['SKHY', 'SK 海力士 ADR'], ['SNDK', 'SanDisk'], ['MRVL', 'Marvell'], ['GOOG', 'Alphabet'], ['GLW', '康寧'], ['IBM', 'IBM'], ['VRT', 'Vertiv'], ['MOD', 'Modine'], ['LITE', 'Lumentum'], ['AAOI', 'Applied Optoelectronics'],
   ['DX-Y.NYB', '美元指數'], ['^TNX', '10年期美債殖利率'], ['CL=F', 'WTI 原油'],
 ];
 const US_GROUPS = [['指數與總經', ['^DJI','^GSPC','^IXIC','^SOX','DX-Y.NYB','^TNX','CL=F']], ['AI 算力／半導體', ['TSM','NVDA','AMD','INTC','AVGO','MRVL','IBM']], ['記憶體', ['MU','SKHY','SNDK']], ['AI 電力／散熱', ['VRT','MOD']], ['光通訊／網路', ['LITE','GLW','AAOI']], ['雲端與電動車', ['GOOG','TSLA','UMC']]];
-// These two closes were supplied by the user to correct a delayed upstream feed.
-// Change and percentage fields are cleared deliberately: their source-session
-// reference values were not supplied and must not be inferred.
-const USER_QUOTE_OVERRIDES = {
-  '^GSPC': 776.340,
-  '^TWOII': 400.95,
-};
-const USER_QUOTE_METADATA = {
-  '^GSPC': { name: 'S&P 500', currency: 'USD' },
-  '^TWOII': { name: '櫃買指數', currency: 'TWD' },
-};
 const WEIGHTED = [['2330', '台積電', 'twse'], ['2317', '鴻海', 'twse'], ['2454', '聯發科', 'twse'], ['2308', '台達電', 'twse']];
 
 const source = (url, label) => ({ url, label });
-const todayTaipei = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+const todayTaipei = () => { const parts = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Taipei', year:'numeric', month:'2-digit', day:'2-digit' }).formatToParts(new Date()).reduce((out, part) => ({ ...out, [part.type]:part.value }), {}); return `${parts.year}-${parts.month}-${parts.day}`; };
 const number = value => Number(String(value ?? '').replaceAll(',', '').replaceAll(' ', ''));
 const clean = value => String(value ?? '').trim();
 
 async function getJson(url) {
-  const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'TaiwanPremarketBrief/1.0' }, signal: AbortSignal.timeout(20_000) });
+  // TPEx open-data responses can exceed 20 seconds while the monthly reports
+  // are being published.  A longer official-source timeout prevents a blank
+  // revenue/financial table caused solely by an impatient request.
+  const response = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'TaiwanPremarketBrief/1.0' }, signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
+}
+async function postText(url, body) {
+  const response = await fetch(url, { method:'POST', headers:{ 'content-type':'application/x-www-form-urlencoded', 'user-agent':'TaiwanPremarketBrief/1.0' }, body:new URLSearchParams(body), signal:AbortSignal.timeout(20_000) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
+}
+async function fetchMopsPage(body) {
+  let lastError;
+  for (const host of ['https://mopsov.twse.com.tw', 'https://mops.twse.com.tw']) {
+    try { return await postText(`${host}/mops/web/ajax_t100sb02_1`, body); } catch (error) { lastError = error; }
+  }
+  throw lastError;
+}
+function mopsText(html) { return clean(html.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')); }
+async function settleMopsInBatches(requests, batchSize = 4) {
+  const results = [];
+  for (let cursor = 0; cursor < requests.length; cursor += batchSize) {
+    results.push(...await Promise.allSettled(requests.slice(cursor, cursor + batchSize).map(request => request())));
+  }
+  return results;
+}
+// MOPS issuer-hosted calls are not written consistently: examples include
+// 「亞洲水泥舉辦…線上法說會」、「2026年上半年度營運概況法人說明會」,
+// and 「本公司舉行…法人說明會」.  Include all of these official notices,
+// but leave out events explicitly described as the company attending a broker
+// or third-party presentation.
+const isIssuerHostedMopsCall = detail => {
+  if (!/(?:法人說明會|法說會)/.test(detail)) return false;
+  if (/(?:受邀|受邀請|邀請).{0,36}(?:參加|出席|舉辦)|(?:本公司|公司).{0,16}參加.{0,36}(?:證券|券商|法人說明會|法說會)|(?:證券|券商).{0,20}(?:邀請|舉辦)/.test(detail)) return false;
+  return /(?:舉辦|舉行|召開|自辦|營運概況|營運成果|財務數字|財務報告|業績展望).{0,48}(?:法人說明會|法說會)|(?:法人說明會|法說會).{0,48}(?:營運概況|營運成果|財務數字|財務報告|業績展望)/.test(detail);
+};
+async function fetchMopsCalendar() {
+  const now = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(now.getTime() + 7 * 86_400_000);
+  const months = [...new Set([now, end].map(d => ({ year:String(d.getFullYear() - 1911), month:String(d.getMonth() + 1).padStart(2, '0') })) .map(x => `${x.year}-${x.month}`))].map(x => { const [year, month] = x.split('-'); return { year, month }; });
+  const wholeMarketRequests = months.flatMap(({ year, month }) => ['sii', 'otc'].map(TYPEK => () => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:'' })));
+  const verificationRequests = months.flatMap(({ year, month }) => TRACKED_MOPS_ISSUERS.map(({ code, TYPEK }) => () => fetchMopsPage({ step:'1', firstin:'ture', off:'1', TYPEK, year, month, co_id:code })));
+  const settledPages = [...await settleMopsInBatches(wholeMarketRequests), ...await settleMopsInBatches(verificationRequests)];
+  const pages = settledPages.filter(result => result.status === 'fulfilled').map(result => result.value);
+  if (!pages.length) throw new Error('MOPS 法人說明會資料無法取得');
+  const sourceInfo = source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表');
+  const rows = pages.flatMap(page => page.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi) ?? []).map(row => [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(match => mopsText(match[1]))).filter(cells => cells.length >= 5);
+  const seen = new Set();
+  return rows.map(cells => ({ code:cells[0], name:cells[1], date:cells[2], time:cells[3], place:cells[4], detail:cells[5], source:sourceInfo })).filter(item => {
+    if (!/^\d{4}$/.test(item.code)) return false;
+    if (!isIssuerHostedMopsCall(item.detail)) return false;
+    const match = item.date.match(/(\d{3,4})\/(\d{1,2})\/(\d{1,2})/); if (!match) return false;
+    const year = Number(match[1]) + (match[1].length === 3 ? 1911 : 0), event = new Date(`${year}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}T00:00:00+08:00`);
+    const key = `${item.code}-${item.date}-${item.time}`; if (event < now || event > end || seen.has(key)) return false; seen.add(key); return true;
+  });
+}
+function rocDate(value) { const match = clean(value).match(/(\d{3,4})年(\d{1,2})月(\d{1,2})日/); if (!match) return null; return `${Number(match[1]) + (match[1].length === 3 ? 1911 : 0)}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}`; }
+function upcomingDividends(payload, codes) {
+  const fields = payload?.fields ?? [], start = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(start.getTime() + 7 * 86_400_000), src = source('https://www.twse.com.tw/zh/announcement/ex-right/twt48u.html', 'TWSE 除權除息預告表');
+  return (payload?.data ?? []).map(row => Object.fromEntries(fields.map((field, index) => [field, row[index]]))).map(row => {
+    const date = rocDate(row['除權除息日期']);
+    return { code:clean(row['股票代號']), name:clean(row['名稱']), date, time:'', place:'除權息', detail:`${clean(row['除權息'])}｜現金股利 ${number(row['現金股利']).toFixed(2)} 元／股；無償配股率 ${number(row['無償配股率']).toFixed(4)}`, source:src };
+  }).filter(item => /^\d{4}$/.test(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
+}
+function upcomingTpexDividends(rows, codes) {
+  const start = new Date(`${todayTaipei()}T00:00:00+08:00`), end = new Date(start.getTime() + 7 * 86_400_000), src = source('https://www.tpex.org.tw/zh-tw/announce/market/ex/announce.html', 'TPEx 除權除息預告表');
+  return (Array.isArray(rows) ? rows : []).map(row => {
+    const raw = clean(row.ExRrightsExDividendDate), date = /^\d{7}$/.test(raw) ? `${Number(raw.slice(0,3))+1911}-${raw.slice(3,5)}-${raw.slice(5,7)}` : null;
+    return { code:clean(row.SecuritiesCompanyCode), name:clean(row.CompanyName), date, time:'', place:'除權息', detail:`${clean(row.ExRrightsExDividend)}｜現金股利 ${number(row.CashDividend).toFixed(2)} 元／股；無償配股率 ${number(row.StockDividendRatio).toFixed(4)}`, source:src };
+  }).filter(item => /^\d{4}$/.test(item.code) && item.date && new Date(`${item.date}T00:00:00+08:00`) >= start && new Date(`${item.date}T00:00:00+08:00`) <= end);
 }
 async function settled(task) { try { return await task(); } catch (error) { return { error: clean(error.message) }; } }
 
@@ -81,12 +153,12 @@ function lookup(row, names) {
 function normalizeTwse(row) {
   const close = number(lookup(row, ['收盤價', 'ClosingPrice']));
   const change = number(lookup(row, ['漲跌價差', 'Change']));
-  return { code: clean(lookup(row, ['證券代號', 'Code'])), name: clean(lookup(row, ['證券名稱', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradeVolume'])), value: number(lookup(row, ['成交金額', 'TradeValue'])), source: source(`${TWSE}/exchangeReport/STOCK_DAY_ALL`, 'TWSE OpenAPI') };
+  return { code: clean(lookup(row, ['證券代號', 'Code'])), name: clean(lookup(row, ['證券名稱', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradeVolume'])), value: number(lookup(row, ['成交金額', 'TradeValue'])), source: source(`${TWSE}/exchangeReport/STOCK_DAY_ALL`, 'TWSE 上市整股日成交資訊') };
 }
 function normalizeTpex(row) {
   const close = number(lookup(row, ['收盤', 'Close']));
   const change = number(lookup(row, ['漲跌', 'Change']));
-  return { code: clean(lookup(row, ['代號', 'SecuritiesCompanyCode', 'Code'])), name: clean(lookup(row, ['名稱', 'CompanyName', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradingShares', 'Volume'])), value: number(lookup(row, ['成交金額', 'TradingValue', 'Value'])), source: source(`${TPEX}/tpex_mainboard_daily_close_quotes`, 'TPEx OpenAPI') };
+  return { code: clean(lookup(row, ['代號', 'SecuritiesCompanyCode', 'Code'])), name: clean(lookup(row, ['名稱', 'CompanyName', 'Name'])), close, change, pct: close ? +(change / (close - change) * 100).toFixed(2) : null, volume: number(lookup(row, ['成交股數', 'TradingShares', 'Volume'])), value: number(lookup(row, ['成交金額', 'TradingValue', 'Value'])), source: source(`${TPEX}/tpex_mainboard_daily_close_quotes`, 'TPEx 上櫃整股收盤行情') };
 }
 async function fetchTaiwanQuotes() {
   const [twseResult, tpexResult] = await Promise.all([
@@ -96,6 +168,35 @@ async function fetchTaiwanQuotes() {
   const twse = Array.isArray(twseResult) ? twseResult.map(normalizeTwse) : [];
   const tpex = Array.isArray(tpexResult) ? tpexResult.map(normalizeTpex) : [];
   return { twse, tpex, errors: [twseResult.error, tpexResult.error].filter(Boolean) };
+}
+async function fetchOfficialBoardLots() {
+  const regular = new Map(), errors = [];
+  for (let cursor = 0; cursor < TRACKED_MARKET_ISSUERS.length; cursor += 20) {
+    const batch = TRACKED_MARKET_ISSUERS.slice(cursor, cursor + 20);
+    const channels = batch.map(({ code, venue }) => `${venue === 'tpex' ? 'otc' : 'tse'}_${code}.tw`).join('|');
+    try {
+      const payload = await getJson(`${MIS_STOCK_INFO_URL}?ex_ch=${encodeURIComponent(channels)}&json=1&delay=0`);
+      for (const row of payload?.msgArray ?? []) {
+        const code = clean(row.c), lots = number(row.v);
+        if (/^\d{4}$/.test(code) && Number.isFinite(lots)) regular.set(code, lots);
+      }
+    } catch (error) { errors.push(`MIS 整股成交量：${clean(error.message)}`); }
+  }
+  const [twseAfter, tpexAfter] = await Promise.all([
+    settled(() => getJson(`${TWSE}/exchangeReport/BFT41U`)),
+    settled(() => getJson(`${TPEX}/tpex_off_market`)),
+  ]);
+  if (twseAfter.error) errors.push(`TWSE 盤後定價：${twseAfter.error}`);
+  if (tpexAfter.error) errors.push(`TPEx 盤後定價：${tpexAfter.error}`);
+  const afterLots = new Map();
+  const addAfter = (rows, codeKeys) => (Array.isArray(rows) ? rows : []).forEach(row => {
+    const code = clean(lookup(row, codeKeys)), lots = number(lookup(row, ['TradeVolume', '成交股數', 'TradingShares']));
+    if (/^\d{4}$/.test(code) && Number.isFinite(lots)) afterLots.set(code, (afterLots.get(code) ?? 0) + lots);
+  });
+  addAfter(twseAfter, ['Code', '證券代號']);
+  addAfter(tpexAfter, ['SecuritiesCompanyCode', 'Code', '代號']);
+  const sourceInfo = source(MIS_STOCK_INFO_URL, '交易所整股＋盤後定價成交量');
+  return { lots: new Map([...regular].map(([code, lots]) => [code, { lots: lots + (afterLots.get(code) ?? 0), source:sourceInfo }])), errors };
 }
 async function fetchUsQuote(symbol, name, range = '1mo') {
   const url = `${YAHOO}/${encodeURIComponent(symbol)}?range=${range}&interval=1d`;
@@ -124,31 +225,127 @@ async function fetchMarket() {
   }
   return { quotes, errors: results.filter(x => x.error).map(x => x.error) };
 }
+async function fetchOtcIndex() {
+  const rows = await getJson(`${TPEX}/tpex_index`);
+  const latest = (Array.isArray(rows) ? rows : []).filter(row => Number.isFinite(number(row.Close)) && Number.isFinite(number(row.Change))).at(-1);
+  if (!latest) throw new Error('TPEx 櫃買指數資料為空');
+  const close = number(latest.Close), change = number(latest.Change), previous = close - change;
+  return {
+    symbol: '^TWOII', name: '櫃買指數', currency: 'TWD', close, change,
+    pct: previous ? +(change / previous * 100).toFixed(2) : null,
+    source: source(TPEX_INDEX_PAGE, 'TPEx 上櫃股價指數收盤行情'),
+  };
+}
 async function fetchNews(query) {
   const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&newsCount=3`;
   const payload = await getJson(url);
   return (payload.news ?? []).slice(0, 3).map(item => ({ title:clean(item.title), publisher:clean(item.publisher), url:item.link, source:source(item.link || url, `Yahoo Finance news API：${clean(item.publisher) || query}`) }));
 }
+function parseTaggedSummary(text) {
+  const section = name => (text.match(new RegExp(`\\[${name}\\]\\s*([\\s\\S]*?)(?=\\n\\[[A-Za-z:]+\\]|$)`, 'i'))?.[1] ?? '').trim();
+  const bullets = name => section(name).split('\n').map(line => line.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean);
+  const events = bullets('EVENTS').map(line => {
+    const [title, ...rest] = line.split(/[｜|]/);
+    return { title: clean(title), summary: clean(rest.join('｜')) };
+  }).filter(item => item.title && item.summary).slice(0, 5);
+  const reading = id => {
+    const values = {};
+    for (const line of section(`READING:${id}`).split('\n')) {
+      const match = line.match(/^\s*(驅動|事件|證據|影響|驗證)\s*[：:]\s*(.+)\s*$/);
+      if (!match) continue;
+      const key = ({ 驅動: 'event', 事件: 'event', 證據: 'evidence', 影響: 'impact', 驗證: 'verify' })[match[1]];
+      values[key] = clean(match[2]);
+    }
+    return values;
+  };
+  const rawMacro = bullets('MACRO').slice(0, 5);
+  const readings = Object.fromEntries(['tw', 'sector', 'portfolio', 'watch'].map(id => [id, reading(id)]));
+  const stockNotes = Object.fromEntries(bullets('HOLDINGS').map(line => {
+    const [code, title, ...rest] = line.split(/[｜|]/).map(clean);
+    return [code, title && rest.length ? { title, summary: rest.join('｜') } : null];
+  }).filter(([code, value]) => /^\d{4}$/.test(code) && value));
+  const suppliedFive = bullets('FIVE');
+  const calendarStart = new Date(`${todayTaipei()}T00:00:00+08:00`);
+  const calendarEnd = new Date(calendarStart.getTime() + 7 * 86_400_000);
+  const calendar = bullets('CALENDAR').filter(item => {
+    if (/(若有|請以|視當週|日常公布|例行)/.test(item)) return false;
+    const dateText = item.match(/(\d{4})\/(\d{2})\/(\d{2})/)?.[0]?.replaceAll('/', '-');
+    if (!dateText) return false;
+    const eventDate = new Date(`${dateText}T00:00:00+08:00`);
+    return eventDate >= calendarStart && eventDate <= calendarEnd;
+  }).slice(0, 12);
+  const fallbackFive = [
+    ...events.map(item => item.summary),
+    ...rawMacro,
+    ...Object.values(readings).flatMap(item => [item.event, item.evidence, item.impact]).filter(Boolean),
+  ];
+  const result = {
+    events,
+    five: [...suppliedFive, ...fallbackFive.filter(item => !suppliedFive.includes(item))].slice(0, 5),
+    macro: [...rawMacro, ...suppliedFive.filter(item => !rawMacro.includes(item))].slice(0, 3),
+    readings,
+    stockNotes,
+    calendar,
+  };
+  if (!result.events.length || result.five.length < 5) throw new Error(`OpenAI summary tags incomplete: ${text.slice(0, 900)}`);
+  return result;
+}
 async function summarizeNews(news, market) {
   if (!process.env.OPENAI_API_KEY) return { events: [], five: [], macro: [], error: 'OPENAI_API_KEY 未設定' };
   const headlines = news.map(x => `- ${x.title}（${x.publisher}）`).join('\n');
-  const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日的國際、台股、半導體與總經事件；只採用工具限制內的可信來源，官方機構、交易所、公司 IR 優先，其次才是 Reuters、Bloomberg、WSJ、CNA、經濟日報與鉅亨。不可引用社群、部落格、論壇或來源不明的內容。
-只根據查證結果、以下新聞標題和市場數字，以繁體中文輸出嚴格 JSON；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。
-JSON 格式：{"events":[{"title":"中文事件標題","summary":"30~50字市場解讀"}],"five":["30~50字"],"macro":["30~50字"],"readings":{"tw":"30~50字台股判讀","sector":"30~50字產業判讀","portfolio":"30~50字持股判讀","watch":"30~50字觀察清單判讀"}}。
-events 最多5則；five 固定5則；macro 至少3則。只採用報告日當日或前5日的新事件；較舊政策或數據不得當作最新事件。不得把交易所 API 更新、一般資料頁面或無投資影響的新聞列入 events。每則須具體說明「事件→受影響市場／族群→接下來要驗證的數字或時點」。若無法從可信來源支持因果，明確寫「原因待原文確認」。搜尋總次數不得超過8次。
+const prompt = `你是台股盤前研究助手。先用網路搜尋查證當日的國際、台股、半導體與總經事件；只採用工具限制內的可信來源，官方機構、交易所、公司 IR 優先，其次才是 Reuters、Bloomberg、WSJ、CNA、經濟日報與鉅亨。不可引用社群、部落格、論壇或來源不明的內容。
+搜尋必須先分配到：(1) MSCI、指數調整、除權息、法說與交易所公告等未來一週事件；(2) 以下市場數字內的 portfolio 與 watch 名單之公司，優先查其最新營收、財報、配息、漲價、管理層或產業供需催化劑；(3) 利率、美元、油價等總經變數。不可只做泛用「台股新聞」搜尋後就宣稱查無事件。FIVE 至少三則必須是有公司、日期或生效時點的具體催化劑；若結果不足，改用已驗證的交易所數字寫出盤面事件與驗證點，但不得以「查無新增可信事件」充數。
+公司條目若只有交易所營收數字，僅能寫「營收、價量、法人或下一個公告」；不可自行推定所屬題材、客戶、供應鏈、訂單、庫存、匯率曝險或漲跌原因。只有搜尋結果明確支持時，才能寫產業脈絡，且要把來源中的公司或事件名稱寫入摘要。
+只根據查證結果、以下新聞標題和市場數字，以繁體中文輸出；不得捏造新聞內文、數字、公司、日期或漲跌原因，也不得給出買賣、停損、加碼、減碼或任何投資指令。所有文字須為30~50個中文字左右、先寫事件或數據、再寫對市場的含義；避免「僅供參考」「值得注意」等空話。標題一律翻成精簡中文。即使可信來源於過去五日內找不到足夠新事件，也絕不可提問、拒答或要求放寬來源；仍須完整輸出以下標籤，並明確以「查無新增可信事件」描述限制，再根據提供的市場數字完成可驗證的盤面解讀。
+嚴格使用下列純文字標籤格式，不要 Markdown、不要 JSON、不要標籤以外的前言或結語：
+[EVENTS]
+- 中文事件標題｜30~50字市場解讀
+[FIVE]
+- 事件標題｜40~70字：明確寫出事件或公告日期／生效時點、直接受影響的公司或族群、與追蹤清單的關聯，以及下一個必須驗證的價量、法人或被動資金反應。不得寫成單純數字摘要。
+[CALENDAR]
+- YYYY/MM/DD HH:MM｜公司代號 公司名稱或事件名稱｜法說會／指數調整／除權息等未來七日已確認時程；僅列出有可信來源確認的日期或時間，最多12則。
+[MACRO]
+- 30~50字總經／商品事件
+[HOLDINGS]
+- 0050｜標題｜60~90字持股研究摘要：依可驗證的指數、除權息或資金事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 2408｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 3481｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 6770｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 8299｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+- 4979｜標題｜60~90字持股研究摘要：依可驗證的公司公告、營收、財報、產業價格或法人事件，依序交代催化劑、日期／數字、股價已反應與下一個驗證點。
+[READING:tw]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+[READING:sector]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+[READING:portfolio]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+[READING:watch]
+驅動：25~45字
+證據：25~45字
+影響：25~45字
+驗證：25~45字
+EVENTS 最多5則；FIVE 必須剛好5則且每則都是不同事件；MACRO 至少3則。readings 每個欄位必須引用提供數字或查證事件，不能空泛或提出交易指令。
+events 最多5則；five 固定5則；macro 至少3則。只採用報告日當日或前5日的新事件；較舊政策或數據不得當作最新事件。不得把交易所 API 更新、一般資料頁面或無投資影響的新聞列入 events。每則須具體說明「事件→受影響市場／族群→接下來要驗證的數字或時點」。若無法從可信來源支持因果，明確寫「原因待原文確認」。搜尋總次數最多14次，優先用於五件事與持股、觀察清單相關的公司催化劑。
 
 市場數字：${JSON.stringify(market)}
 
 新聞標題：
 ${headlines}`;
-  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'low' }, tools: [{ type: 'web_search', filters: { allowed_domains: TRUSTED_NEWS_DOMAINS } }], max_tool_calls: 8, input: prompt }), signal: AbortSignal.timeout(110_000) });
+  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5-mini', reasoning: { effort: 'low' }, tools: [{ type: 'web_search', filters: { allowed_domains: TRUSTED_NEWS_DOMAINS } }], max_tool_calls: 14, input: prompt }), signal: AbortSignal.timeout(110_000) });
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}: ${(await response.text()).slice(0, 600)}`);
   const payload = await response.json();
   const outputText = payload.output_text || (payload.output ?? []).flatMap(item => item.content ?? []).map(part => part.text ?? '').join('');
   if (!outputText) throw new Error('OpenAI returned empty summary text');
-  const jsonText = outputText.replace(/^```json\s*|\s*```$/g, '').match(/\{[\s\S]*\}/)?.[0];
-  if (!jsonText) throw new Error(`OpenAI did not return JSON summary text: ${JSON.stringify((payload.output ?? []).map(item => ({ type:item.type, status:item.status, contentTypes:(item.content ?? []).map(part => part.type), textLength:(item.content ?? []).reduce((sum, part) => sum + String(part.text ?? '').length, 0) })))}`);
-  try { return JSON.parse(jsonText); } catch (error) { throw new Error(`Web summary JSON parse error: ${error.message}; raw=${jsonText.slice(0, 900)}`); }
+  return parseTaggedSummary(outputText);
 }
 function normalizeIndex(row, url) {
   const sign = clean(row['漲跌']) === '-' ? -1 : 1;
@@ -200,7 +397,7 @@ function yahooSymbol(item) { return `${item.code}.${item.venue === 'tpex' ? 'TWO
 async function enrichHistory(items) {
   const results = await Promise.all(items.map(item => settled(() => fetchUsQuote(yahooSymbol(item), item.name))));
   const byCode = new Map(results.filter(x => !x.error).map(x => [x.symbol.split('.')[0], x]));
-  return items.map(item => { const h = byCode.get(item.code); return h ? { ...item, volumePct: h.volumePct, weekPct: h.weekPct, monthPct: h.monthPct } : item; });
+  return items.map(item => { const h = byCode.get(item.code); return h ? { ...item, weekPct: h.weekPct, monthPct: h.monthPct } : item; });
 }
 function parseInstitutionRanks(payload, sourceInfo) {
   const fields = payload?.fields ?? [], rows = payload?.data ?? [];
@@ -270,8 +467,8 @@ function reportDate() {
 }
 async function main() {
   const generatedAt = new Date().toISOString();
-  const [tw, us, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews] = await Promise.all([
-    fetchTaiwanQuotes(), fetchMarket(),
+  const [tw, us, otcIndexResult, notices, punish, tpexDisposals, holidays, indexRows, institutional, listedRevenueRows, otcRevenueRows, futuresRows, institutionStocks, listedFinancials, otcFinancials, priorWeek, priorMonth, globalNews, taiwanNews, previousSnapshot, mopsCalendar, dividendRows, tpexDividendRows, boardLots] = await Promise.all([
+    fetchTaiwanQuotes(), fetchMarket(), settled(() => fetchOtcIndex()),
     settled(() => getJson(`${TWSE}/announcement/notice`)),
     settled(() => getJson(`${TWSE}/announcement/punish`)),
     settled(() => getJson(`${TPEX}/tpex_disposal_information`)),
@@ -287,6 +484,11 @@ async function main() {
     historicalIndices(7), historicalIndices(31),
     settled(() => fetchNews('Federal Reserve inflation oil markets')),
     settled(() => fetchNews('Taiwan stock market semiconductor')),
+    settled(() => getJson(PREVIOUS_SNAPSHOT_URL)),
+    settled(() => fetchMopsCalendar()),
+    settled(() => getJson(DIVIDEND_URL)),
+    settled(() => getJson(TPEX_DIVIDEND_URL)),
+    fetchOfficialBoardLots(),
   ]);
   const allQuotes = new Map([...tw.twse, ...tw.tpex].map(item => [item.code, item]));
   const holidayRows = Array.isArray(holidays) ? holidays : holidays.data ?? [];
@@ -295,11 +497,31 @@ async function main() {
   // not inherit the runner's local timezone.
   const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
   const isHoliday = weekday === 0 || weekday === 6 || holidayRows.some(row => clean(lookup(row, ['日期', 'date'])).includes(date) && /無交易|休市/.test(JSON.stringify(row)));
-  const sourceErrors = [...new Set([...tw.errors, ...us.errors, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error].filter(Boolean))];
+  const sourceErrors = [...new Set([...tw.errors, ...us.errors, otcIndexResult.error, notices.error, punish.error, tpexDisposals.error, holidays.error, indexRows.error, institutional.error, listedRevenueRows.error, otcRevenueRows.error, futuresRows.error, institutionStocks.error, listedFinancials.error, otcFinancials.error, priorWeek.error, priorMonth.error, globalNews.error, taiwanNews.error, mopsCalendar.error, dividendRows.error, tpexDividendRows.error, ...boardLots.errors].filter(Boolean))];
   const heldCodes = new Set(PORTFOLIO.map(x => x[0]));
+  const trackedCodes = new Set([...heldCodes, ...GROUPS.flatMap(([, , stocks]) => stocks.map(stock => stock[0]))]);
+  const currentMopsEvents = mopsCalendar.error ? [] : mopsCalendar;
+  const priorMopsEvents = (previousSnapshot?.events?.calendar ?? []).filter(item => /MOPS/.test(item.source?.label ?? ''));
+  const officialMopsEvents = currentMopsEvents.length ? currentMopsEvents : priorMopsEvents;
   const revenueMap = normalizeRevenue(listedRevenueRows, otcRevenueRows);
-  const rawPortfolio = PORTFOLIO.map(stock => portfolioItem(stock, allQuotes, revenueMap));
-  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...addRevenue(selectQuote(stock, allQuotes), revenueMap), held: heldCodes.has(stock[0]) })) }));
+  const previousByCode = new Map([...(previousSnapshot?.taiwan?.portfolio ?? []), ...(previousSnapshot?.taiwan?.observation ?? []).flatMap(group => group.stocks ?? [])].map(item => [item.code, item]));
+  const previousIsSameReportDate = previousSnapshot?.reportDate?.date === date;
+  const keepPreviousQuote = item => {
+    const previous = previousByCode.get(item.code);
+    if (!item.unavailable || !previous?.close) return item;
+    return { ...previous, shares:item.shares, cost:item.cost, netCost:item.netCost, fallback:true, source:{ ...previous.source, label:`${previous.source?.label ?? '交易所資料'}（前次成功快照）` } };
+  };
+  const withOfficialBoardLots = item => {
+    const volume = boardLots.lots.get(item.code);
+    return volume ? { ...item, boardLots:volume.lots, volumeSource:volume.source } : { ...item, boardLots:null };
+  };
+  const withOfficialVolumeChange = item => {
+    const previous = previousByCode.get(item.code);
+    const volumePct = !previousIsSameReportDate && Number.isFinite(item.boardLots) && Number.isFinite(previous?.boardLots) && previous.boardLots > 0 ? +((item.boardLots / previous.boardLots - 1) * 100).toFixed(2) : null;
+    return { ...item, volumePct };
+  };
+  const rawPortfolio = PORTFOLIO.map(stock => withOfficialVolumeChange(withOfficialBoardLots(keepPreviousQuote(portfolioItem(stock, allQuotes, revenueMap)))));
+  const rawObservation = GROUPS.map(([id, title, stocks]) => ({ id, title, stocks: stocks.map(stock => ({ ...withOfficialVolumeChange(withOfficialBoardLots(keepPreviousQuote(addRevenue(selectQuote(stock, allQuotes), revenueMap)))), held: heldCodes.has(stock[0]) })) }));
   const enriched = await enrichHistory([...rawPortfolio, ...rawObservation.flatMap(g => g.stocks), ...WEIGHTED.map(x => selectQuote(x, allQuotes))]);
   const history = new Map(enriched.map(x => [x.code, x]));
   const portfolio = rawPortfolio.map(x => ({ ...x, ...history.get(x.code) }));
@@ -307,19 +529,26 @@ async function main() {
   const financials = financialMap(listedFinancials, otcFinancials);
   const tracked = [...portfolio, ...observation.flatMap(g => g.stocks)].map(x => ({ ...x, financial: financials.get(x.code) ?? null }));
   const weighted = WEIGHTED.map(x => history.get(x[0]) ?? selectQuote(x, allQuotes));
+  const otcIndex = otcIndexResult.error ? (previousSnapshot?.market?.otcIndex ? {
+    ...previousSnapshot.market.otcIndex,
+    fallback: true,
+    source: { ...previousSnapshot.market.otcIndex.source, label: `${previousSnapshot.market.otcIndex.source?.label ?? '行情資料'}（前次成功快照）` },
+  } : null) : otcIndexResult;
   const allMarketQuotes = [...tw.twse, ...tw.tpex].filter(x => Number.isFinite(x.pct));
   const breadth = { up: allMarketQuotes.filter(x=>x.pct>0).length, down:allMarketQuotes.filter(x=>x.pct<0).length, flat:allMarketQuotes.filter(x=>x.pct===0).length, turnover:allMarketQuotes.reduce((sum,x)=>sum+(x.value||0),0), topTurnover:allMarketQuotes.sort((a,b)=>(b.value||0)-(a.value||0)).slice(0,20).reduce((sum,x)=>sum+(x.value||0),0) };
   const rankSource = source(`${TWSE_RWD}/fund/T86?selectType=ALLBUT0999&response=json`, 'TWSE 個股法人買賣超');
   const newsItems = [...(globalNews.error ? [] : globalNews), ...(taiwanNews.error ? [] : taiwanNews)];
   const marketSummary = buildMarketSummary(indexRows, institutional);
-  const sectorTrends = sectorPulse(marketSummary.sectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name)));
+  const liveSectors = marketSummary.sectors;
+  const sectorTrends = liveSectors.length ? sectorPulse(liveSectors, priorWeek.rows.filter(x=>/類指數$/.test(x.name)), priorMonth.rows.filter(x=>/類指數$/.test(x.name))) : (previousSnapshot?.market?.sectorPulse ?? []).map(item => ({ ...item, fallback:true, source:{ ...item.source, label:`${item.source?.label ?? '交易所類股資料'}（前次成功快照）` } }));
   const summaryResult = await settled(() => summarizeNews(newsItems, {
     dow:us.quotes.find(x=>x.symbol==='^DJI'), nasdaq:us.quotes.find(x=>x.symbol==='^IXIC'), dollar:us.quotes.find(x=>x.symbol==='DX-Y.NYB'), yield:us.quotes.find(x=>x.symbol==='^TNX'), oil:us.quotes.find(x=>x.symbol==='CL=F'),
-    taiex:marketSummary.taiex, otc:us.quotes.find(x=>x.symbol==='^TWOII'), breadth,
+    taiex:marketSummary.taiex, otc:otcIndex, breadth,
     sectors:{ strong:sectorTrends.slice(0,3).map(x=>({name:x.name,pct:x.pct,weekPct:x.weekPct,monthPct:x.monthPct})), weak:sectorTrends.slice(-3).map(x=>({name:x.name,pct:x.pct,weekPct:x.weekPct,monthPct:x.monthPct})) },
     portfolio:portfolio.map(x=>({code:x.code,name:x.name,pct:x.pct,volumePct:x.volumePct,revenue:x.revenue&&{yoy:x.revenue.yoy,mom:x.revenue.mom}})),
     watch:observation.flatMap(g=>g.stocks).slice(0,12).map(x=>({code:x.code,name:x.name,pct:x.pct,volumePct:x.volumePct,revenue:x.revenue&&{yoy:x.revenue.yoy,mom:x.revenue.mom}})),
   }));
+  const dailyStockNotes = summaryResult.error ? {} : (summaryResult.stockNotes ?? {});
   const latest = {
     schemaVersion: 1,
     generatedAt,
@@ -329,15 +558,20 @@ async function main() {
     news: { global:globalNews.error ? [] : globalNews, taiwan:taiwanNews.error ? [] : taiwanNews },
     newsAnalysis: summaryResult.error ? { events: [], five: [], macro: [], error:summaryResult.error } : summaryResult,
     usGroups: US_GROUPS.map(([title, symbols]) => ({ title, stocks:symbols.map(s=>us.quotes.find(x=>x.symbol===s)).filter(Boolean) })),
-    market: { ...marketSummary, otcIndex:us.quotes.find(x=>x.symbol==='^TWOII'), futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorTrends },
-    taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },
+    market: { ...marketSummary, otcIndex, futures: normalizeTaiFutures(futuresRows), weighted, breadth, institutionRanks:parseInstitutionRanks(institutionStocks, rankSource), sectorPulse:sectorTrends },
+    taiwan: { portfolio: portfolio.map(x => ({ ...x, financial:financials.get(x.code) ?? null, stockNote:dailyStockNotes[x.code] ?? null })), observation: observation.map(g => ({ ...g, stocks:g.stocks.map(x => ({ ...x, financial:financials.get(x.code) ?? null })) })), financials:tracked },
     events: {
       notices: commonStockEvents(notices, source(`${TWSE}/announcement/notice`, 'TWSE 注意股票')),
       punishments: [
         ...commonStockEvents(punish, source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), { activeOnly: true }),
         ...commonStockEvents(tpexDisposals, source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), { activeOnly: true }),
       ],
-      sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), tpexDisposals: source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票') },
+      calendar: [
+        ...officialMopsEvents,
+        ...(dividendRows.error ? [] : upcomingDividends(dividendRows, trackedCodes)),
+        ...(tpexDividendRows.error ? [] : upcomingTpexDividends(tpexDividendRows, trackedCodes)),
+      ].sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`)),
+      sources: { notices: source(`${TWSE}/announcement/notice`, 'TWSE 注意股票'), punishments: source(`${TWSE}/announcement/punish`, 'TWSE 處置股票'), tpexDisposals: source('https://www.tpex.org.tw/zh-tw/announce/market/disposal.html', 'TPEx 上櫃處置股票'), calendar: source('https://mopsov.twse.com.tw/mops/web/t100sb02_1', 'MOPS 法人說明會一覽表') },
     },
     unavailable: ['法說市場共識、DRAM 現貨/合約價與亞股早盤：尚未設定具授權且可驗證的 API，故不在本版本呈現數字。', '產業漲跌原因須使用可授權的新聞／公告來源；目前只呈現交易所分類指數的客觀強弱。'],
   };

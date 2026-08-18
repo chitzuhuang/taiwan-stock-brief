@@ -29,8 +29,8 @@ const TAIFEX_FUTURES_URL = 'https://openapi.taifex.com.tw/v1/DailyMarketReportFu
 
 const PORTFOLIO = [
   // Final field is the broker net cost basis from the supplied holdings screen (fees/taxes included).
-  ['0050', '元大台灣50', 'twse', 1100, 104.84, 115610], ['2408', '南亞科', 'twse', 50, 405.84, 20404], ['3481', '群創', 'twse', 1000, 66.06, 66277],
-  ['6770', '力積電', 'twse', 800, 73.11, 58766], ['8996', '高力', 'twse', 50, 1115.92, 56079], ['4979', '華星光', 'tpex', 100, 478.90, 48120],
+  ['0050', '元大台灣50', 'twse', 1000, 104.84, 105100], ['2408', '南亞科', 'twse', 50, 405.84, 20404], ['3481', '群創', 'twse', 1000, 66.06, 66277],
+  ['6770', '力積電', 'twse', 800, 73.11, 58766], ['4979', '華星光', 'tpex', 100, 478.90, 48120], ['8299', '群聯', 'tpex', 10, 2016.70, 20167],
 ];
 const GROUPS = [
   ['A-1', '光通訊/CPO 上游光晶片', [['3081', '聯亞', 'tpex'], ['3234', '光環', 'tpex'], ['4991', '環宇-KY', 'tpex']]],

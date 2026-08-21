@@ -3,9 +3,6 @@ name: Update Taiwan pre-market report
 on:
   push:
     branches: [main]
-  schedule:
-    # 20:50 UTC on Sun–Thu = 04:50 Asia/Taipei on Mon–Fri.
-    - cron: '50 20 * * 0-4'
   workflow_dispatch:
 
 permissions:
